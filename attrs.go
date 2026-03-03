@@ -1,4 +1,4 @@
-package telemetry
+package otel
 
 // The following attributes are used by the UI to interpret spans and control
 // their behavior in the UI.
