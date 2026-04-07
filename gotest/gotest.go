@@ -202,7 +202,6 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				}
 
 				ts.output.WriteString(ev.Output)
-				ts.span.AddEvent(trimmed, trace.WithTimestamp(ev.Time))
 
 				// Route to span logs if configured.
 				if ts.streams != nil {

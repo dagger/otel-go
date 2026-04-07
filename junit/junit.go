@@ -6,7 +6,6 @@ package junit
 import (
 	"context"
 	"io"
-	"strings"
 	"time"
 
 	otel "github.com/dagger/otel-go"
@@ -150,11 +149,6 @@ func emitTest(ctx context.Context, tracer trace.Tracer, cfg *runConfig, suiteNam
 			io.WriteString(streams.Stderr, test.SystemErr)
 		}
 		streams.Close()
-	}
-
-	// Emit output as span events too.
-	if test.SystemOut != "" {
-		span.AddEvent(strings.TrimSpace(test.SystemOut))
 	}
 
 	switch test.Status {

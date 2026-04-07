@@ -25,7 +25,6 @@ func TestOTel(t *testing.T) {
 	testctx.New(t,
 		testctx.WithParallel(),
 		oteltestctx.WithTracing[*testing.T](),
-		oteltestctx.WithLogging[*testing.T](),
 	).RunTests(OTelSuite{})
 }
 
@@ -225,25 +224,6 @@ func (OTelSuite) TestTracingNesting(ctx context.Context, t *testctx.T) {
 	// Verify timing - each span should end after its children
 	assert.True(t, grandchild.EndTime().Before(child.EndTime()))
 	assert.True(t, child.EndTime().Before(parent.EndTime()))
-}
-
-func (OTelSuite) TestLogging(ctx context.Context, t *testctx.T) {
-	// pretty annoying, not sure how to test this, just comment out to verify
-	t.Skip("skipping logging test since it intentionally fails")
-
-	// Regular logs
-	t.Log("simple log message")
-	t.Logf("formatted %s message", "log")
-
-	// Error logs
-	t.Error("simple error message")
-	t.Errorf("formatted %s message", "error")
-
-	// Nested test with logs
-	t.Run("child", func(ctx context.Context, t *testctx.T) {
-		t.Log("child log message")
-		t.Error("child error message")
-	})
 }
 
 func (OTelSuite) TestInterrupted(ctx context.Context, t *testctx.T) {

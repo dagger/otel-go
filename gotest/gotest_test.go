@@ -2,7 +2,6 @@ package gotest_test
 
 import (
 	"os"
-	"slices"
 	"strings"
 	"testing"
 
@@ -161,19 +160,6 @@ func TestParallelTests(t *testing.T) {
 	// Both should pass
 	assert.Equal(t, codes.Ok, a.Status().Code)
 	assert.Equal(t, codes.Ok, b.Status().Code)
-}
-
-func TestOutputCaptured(t *testing.T) {
-	spans := runFixture(t)
-
-	span := findSpan(spans, "TestPass")
-	require.NotNil(t, span)
-
-	events := span.Events()
-	found := slices.ContainsFunc(events, func(e sdktrace.Event) bool {
-		return strings.Contains(e.Name, "this test passes")
-	})
-	assert.True(t, found, "expected output event containing 'this test passes', got events: %v", events)
 }
 
 func TestSkippedPackage(t *testing.T) {
