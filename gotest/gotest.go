@@ -34,10 +34,11 @@ type TestEvent struct {
 
 // testSpan tracks an in-flight span for a single test.
 type testSpan struct {
-	span    trace.Span
-	ctx     context.Context
-	output  strings.Builder
-	streams *otel.SpanStreams
+	span         trace.Span
+	ctx          context.Context
+	output       strings.Builder
+	streams      *otel.SpanStreams
+	bufferedOut  strings.Builder // buffered output for non-verbose mode
 }
 
 // Option configures the behavior of Run.
@@ -45,6 +46,7 @@ type Option func(*runConfig)
 
 type runConfig struct {
 	output         io.Writer
+	verbose        bool
 	loggerProvider *sdklog.LoggerProvider
 	registry       *SpanContextRegistry
 }
@@ -52,8 +54,24 @@ type runConfig struct {
 // WithOutput passes through the human-readable test output (the Output
 // field of each JSON event) to w. This reconstructs what go test would
 // normally print, regardless of whether the caller is consuming JSON.
+//
+// By default the output mimics non-verbose go test: per-test output is
+// only shown for failing tests. Use [WithVerbose] to show all output.
 func WithOutput(w io.Writer) Option {
 	return func(c *runConfig) { c.output = w }
+}
+
+// WithVerbose controls whether the human-readable output written via
+// [WithOutput] includes per-test detail for passing tests. When false
+// (the default), output is only shown for failing tests, matching the
+// behavior of go test without -v.
+//
+// Note: go test -json always forces -test.v=test2json internally,
+// which makes testing.Verbose() return true inside test binaries.
+// This option only affects the reconstructed human-readable output;
+// it cannot change the behavior of testing.Verbose().
+func WithVerbose(v bool) Option {
+	return func(c *runConfig) { c.verbose = v }
 }
 
 // WithLoggerProvider routes test output to each test's span as OTel log
@@ -98,8 +116,18 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 		}
 
 		// Pass through the human-readable output.
+		// In verbose mode, write immediately. In non-verbose mode,
+		// buffer per-test output and only flush it on failure.
 		if cfg.output != nil && ev.Output != "" {
-			io.WriteString(cfg.output, ev.Output)
+			if ev.Test != "" && !cfg.verbose {
+				// Buffer test-specific output.
+				key := ev.Package + "/" + ev.Test
+				if ts, ok := spans[key]; ok {
+					ts.bufferedOut.WriteString(ev.Output)
+				}
+			} else {
+				io.WriteString(cfg.output, ev.Output)
+			}
 		}
 
 		// Handle package-level events (no test name).
@@ -214,6 +242,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				if ts.streams != nil {
 					ts.streams.Close()
 				}
+				// Non-verbose: discard buffered output for passing tests.
 				ts.span.SetStatus(codes.Ok, "test passed")
 				ts.span.SetAttributes(semconv.TestCaseResultStatusPass)
 				ts.span.End(trace.WithTimestamp(ev.Time))
@@ -224,6 +253,10 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			if ts, ok := spans[key]; ok {
 				if ts.streams != nil {
 					ts.streams.Close()
+				}
+				// Non-verbose: flush buffered output for failing tests.
+				if cfg.output != nil && !cfg.verbose && ts.bufferedOut.Len() > 0 {
+					io.WriteString(cfg.output, ts.bufferedOut.String())
 				}
 				desc := extractErrorOutput(ts.output.String())
 				if desc == "" {
@@ -240,6 +273,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				if ts.streams != nil {
 					ts.streams.Close()
 				}
+				// Non-verbose: discard buffered output for skipped tests.
 				ts.span.SetStatus(codes.Ok, "test skipped")
 				ts.span.SetAttributes(semconv.TestSuiteRunStatusSkipped)
 				ts.span.End(trace.WithTimestamp(ev.Time))

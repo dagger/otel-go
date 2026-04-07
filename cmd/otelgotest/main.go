@@ -113,6 +113,7 @@ func run() int {
 	// Process JSON events, writing human-readable output to stdout.
 	opts := []gotest.Option{
 		gotest.WithOutput(os.Stdout),
+		gotest.WithVerbose(hasVerboseFlag(args)),
 		gotest.WithSpanContextRegistry(registry),
 	}
 	if lp := otel.LoggerProvider(ctx); lp != nil {
@@ -198,6 +199,21 @@ func handleSpanContextConn(conn net.Conn, registry *gotest.SpanContextRegistry) 
 
 func formatTraceparent(sc trace.SpanContext) string {
 	return fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
+}
+
+// hasVerboseFlag checks if -v or -test.v is present in the user's args.
+func hasVerboseFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-v" || arg == "-test.v" ||
+			arg == "-v=true" || arg == "-test.v=true" {
+			return true
+		}
+		// Stop at -- or first non-flag argument.
+		if arg == "--" {
+			break
+		}
+	}
+	return false
 }
 
 func hasOTLPEndpoint() bool {
