@@ -274,6 +274,10 @@ func extractErrorOutput(output string) string {
 // cleanTestifyMessage extracts the meaningful content from verbose
 // testify-style error messages. It keeps only "Error:" and "Messages:"
 // sections, stripping "Error Trace:" and "Test:" sections.
+//
+// Note: Go's testing.decorate adds 4 spaces of indentation to
+// continuation lines of multi-line messages, so lines may be
+// prefixed with spaces before the tab characters.
 func cleanTestifyMessage(msg string) string {
 	if !strings.Contains(msg, "\tError:") {
 		return ""
@@ -285,6 +289,9 @@ func cleanTestifyMessage(msg string) string {
 	found := false
 
 	for _, line := range lines {
+		// Strip leading spaces added by Go's testing.decorate.
+		line = strings.TrimLeft(line, " ")
+
 		// Section headers look like: \t<Name>:<padding>\t<value>
 		if len(line) > 1 && line[0] == '\t' && line[1] != ' ' && line[1] != '\t' {
 			inWanted = false

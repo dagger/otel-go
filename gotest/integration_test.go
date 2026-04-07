@@ -325,14 +325,14 @@ func TestErrorMessageCleaning(t *testing.T) {
 	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestVerbose"})
 
 	// Simulate testify-formatted error output as test2json would emit it.
-	// Go's testing package adds "    file.go:line: " to the first line;
-	// subsequent lines of the multi-line testify message have literal tabs.
+	// Go's testing.decorate adds "    file.go:line: " to the first line
+	// and 4 spaces of indentation to continuation lines.
 	for _, line := range []string{
 		"    test.go:42: \n",
-		"\tError Trace:\t/src/test.go:42\n",
-		"\t            \t\t\t/src/helper.go:10\n",
-		"\tError:      \tExpected nil, but got error\n",
-		"\tTest:       \tTestVerbose\n",
+		"    \tError Trace:\t/src/test.go:42\n",
+		"    \t            \t\t\t/src/helper.go:10\n",
+		"    \tError:      \tExpected nil, but got error\n",
+		"    \tTest:       \tTestVerbose\n",
 	} {
 		enc.Encode(gotest.TestEvent{Time: now, Action: "output", Package: "example.com/pkg", Test: "TestVerbose", Output: line})
 	}
@@ -376,9 +376,9 @@ func TestErrorMessageCleaningWithNoise(t *testing.T) {
 		"    test.go:10: some log output\n",
 		"    test.go:20: more log output\n",
 		"    test.go:42: \n",
-		"\tError Trace:\t/src/test.go:42\n",
-		"\tError:      \tCondition never satisfied\n",
-		"\tTest:       \tTestNoisy\n",
+		"    \tError Trace:\t/src/test.go:42\n",
+		"    \tError:      \tCondition never satisfied\n",
+		"    \tTest:       \tTestNoisy\n",
 		"    test.go:50: cleanup: exit status 1\n",
 		"    test.go:60: server: shutting down\n",
 	} {
