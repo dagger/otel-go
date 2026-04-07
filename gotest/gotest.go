@@ -125,7 +125,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				if ts, ok := spans[key]; ok {
 					ts.bufferedOut.WriteString(ev.Output)
 				}
-			} else {
+			} else if cfg.verbose || strings.TrimSpace(ev.Output) != "PASS" {
 				io.WriteString(cfg.output, ev.Output)
 			}
 		}
