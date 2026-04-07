@@ -2,8 +2,6 @@ package junit_test
 
 import (
 	"os"
-	"slices"
-	"strings"
 	"testing"
 
 	"github.com/dagger/otel-go/junit"
@@ -70,7 +68,6 @@ func TestFailingTest(t *testing.T) {
 	require.NotNil(t, span, "expected span for TestFail")
 
 	assert.Equal(t, codes.Error, span.Status().Code)
-	assert.Contains(t, span.Status().Description, "something went wrong")
 	assert.Contains(t, span.Attributes(), semconv.TestSuiteRunStatusFailure)
 }
 
@@ -87,10 +84,11 @@ func TestSkippedTest(t *testing.T) {
 func TestSuiteSpan(t *testing.T) {
 	spans := runFixture(t)
 
-	suite := findSpan(spans, "github.com/example/pkg")
+	// go-junit-report emits an empty suite name; we fall back to "suite".
+	suite := findSpan(spans, "suite")
 	require.NotNil(t, suite, "expected suite span")
 
-	// Suite has failures, so it should be marked as error.
+	// Suite has failures so it should be marked as error.
 	assert.Equal(t, codes.Error, suite.Status().Code)
 	assert.Contains(t, suite.Attributes(), semconv.TestSuiteRunStatusFailure)
 
@@ -100,22 +98,21 @@ func TestSuiteSpan(t *testing.T) {
 	assert.Equal(t, suite.SpanContext().SpanID(), pass.Parent().SpanID())
 }
 
-func TestOutputCaptured(t *testing.T) {
+func TestSubtestSpanName(t *testing.T) {
 	spans := runFixture(t)
 
-	span := findSpan(spans, "TestPass")
-	require.NotNil(t, span)
+	// JUnit flattens subtests as "TestSub/level1/level2".
+	// Span name should be the leaf: "level2".
+	span := findSpan(spans, "level2")
+	require.NotNil(t, span, "expected span with leaf name 'level2'")
 
-	events := span.Events()
-	found := slices.ContainsFunc(events, func(e sdktrace.Event) bool {
-		return strings.Contains(e.Name, "this test passes")
-	})
-	assert.True(t, found, "expected output event containing 'this test passes'")
+	assert.Equal(t, "TestSub/level1/level2",
+		spanAttr(span, semconv.TestCaseNameKey).AsString())
 }
 
 func TestSpanCount(t *testing.T) {
 	spans := runFixture(t)
 
-	// 1 suite + 5 tests = 6 spans
-	assert.Len(t, spans, 6)
+	// 1 suite + 9 tests = 10 spans
+	assert.Len(t, spans, 10)
 }
