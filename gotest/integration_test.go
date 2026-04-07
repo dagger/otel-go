@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"runtime/debug"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +24,16 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// testBinaryPackage returns the import path of the package under test,
+// matching what oteltestctx.detectTestPackage() returns at runtime.
+func testBinaryPackage() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	return strings.TrimSuffix(bi.Path, ".test")
+}
 
 // TestSpanContextPropagation is an integration test that verifies the full
 // cross-process span context flow:
@@ -61,8 +73,9 @@ func TestSpanContextPropagation(t *testing.T) {
 	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestFoo"})
 
 	// Simulate what oteltest does: connect to the socket and retrieve
-	// the span context for TestFoo.
-	remoteSC := requestSpanContext(t, socketPath, "TestFoo")
+	// the span context for TestFoo. The socket protocol uses
+	// package-qualified names ("package/TestName").
+	remoteSC := requestSpanContext(t, socketPath, "example.com/pkg/TestFoo")
 
 	// Create a child span using the remote span context, simulating
 	// an instrumented operation inside the test (e.g. a Dagger call).
@@ -124,8 +137,9 @@ func TestSpanContextPropagationSubtest(t *testing.T) {
 	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestParent/sub"})
 
 	// Retrieve span contexts for both the parent and subtest.
-	parentSC := requestSpanContext(t, socketPath, "TestParent")
-	subSC := requestSpanContext(t, socketPath, "TestParent/sub")
+	// Socket protocol uses package-qualified names.
+	parentSC := requestSpanContext(t, socketPath, "example.com/pkg/TestParent")
+	subSC := requestSpanContext(t, socketPath, "example.com/pkg/TestParent/sub")
 
 	// Create child operations under each.
 	parentCtx := trace.ContextWithRemoteSpanContext(context.Background(), parentSC)
@@ -205,7 +219,7 @@ func TestSpanContextPropagationWaitFor(t *testing.T) {
 	// The handler should block until the span is registered.
 	result := make(chan trace.SpanContext, 1)
 	go func() {
-		result <- requestSpanContext(t, socketPath, "TestLate")
+		result <- requestSpanContext(t, socketPath, "example.com/pkg/TestLate")
 	}()
 
 	// Give the socket client time to connect and block.
@@ -249,6 +263,12 @@ func TestSpanContextWithMiddleware(t *testing.T) {
 	// Set the socket env var before creating the middleware so it picks it up.
 	t.Setenv("OTEL_TEST_SOCKET", socketPath)
 
+	// The middleware detects the package via debug.ReadBuildInfo(), so the
+	// synthetic JSON events must use the same package path for the
+	// package-qualified registry keys to match.
+	pkg := testBinaryPackage()
+	require.NotEmpty(t, pkg, "could not detect test binary package")
+
 	// Feed synthetic JSON events to gotest.Run.
 	pr, pw := io.Pipe()
 
@@ -261,11 +281,11 @@ func TestSpanContextWithMiddleware(t *testing.T) {
 
 	now := time.Now()
 	enc := json.NewEncoder(pw)
-	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
+	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: pkg})
 
 	// Write the "run" event matching the test name that testctx will produce.
 	fullTestName := t.Name() + "/inner"
-	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: fullTestName})
+	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: pkg, Test: fullTestName})
 
 	// Run the real middleware. WithTracing sees OTEL_TEST_SOCKET, connects
 	// to the socket, and adopts the span context from gotest.Run.
@@ -277,8 +297,8 @@ func TestSpanContextWithMiddleware(t *testing.T) {
 	})
 
 	// Finish the synthetic test events.
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg", Test: fullTestName})
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg"})
+	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: pkg, Test: fullTestName})
+	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: pkg})
 	pw.Close()
 
 	require.NoError(t, <-done)

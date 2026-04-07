@@ -8,7 +8,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -91,7 +90,11 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 	for scanner.Scan() {
 		var ev TestEvent
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
-			return fmt.Errorf("decoding test event: %w", err)
+			// Non-JSON line (e.g., build error). Pass through to output.
+			if cfg.output != nil {
+				io.WriteString(cfg.output, scanner.Text()+"\n")
+			}
+			continue
 		}
 
 		// Pass through the human-readable output.
@@ -174,7 +177,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			spans[key] = ts
 
 			if cfg.registry != nil {
-				cfg.registry.Register(ev.Test, span.SpanContext())
+				cfg.registry.Register(key, span.SpanContext())
 			}
 
 		case "output":

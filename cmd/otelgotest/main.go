@@ -1,23 +1,28 @@
-// otelgotest is a go test -exec wrapper that emits OTel spans for each
-// test. Usage:
+// otelgotest is a drop-in go test replacement that emits OTel spans for
+// each test. Usage:
 //
-//	go test -exec otelgotest ./...
+//	otelgotest ./...
+//	otelgotest -v -run TestFoo ./mypackage
 //
-// When called by go test -exec, the first argument is the compiled test
-// binary followed by -test.* flags. The wrapper runs the binary with
-// -test.v=test2json, pipes stdout through go tool test2json, and feeds
-// the JSON stream to gotest.Run for OTel export.
+// All flags and arguments are forwarded to go test. The command runs
+// go test -json internally, parses the JSON event stream, and emits
+// OTel spans via gotest.Run. Human-readable output is reconstructed
+// on stdout.
 //
-// The original human-readable output is reconstructed and printed to
-// stdout so go test can process it normally (e.g. with -json or -v).
+// Unlike the old -exec approach (go test -exec otelgotest), this
+// preserves test caching.
 //
-// If no OTLP endpoint is configured, the test binary is executed
-// directly with no overhead.
+// Cross-process span context propagation is supported via a Unix
+// socket (OTEL_TEST_SOCKET). Test binaries using oteltestctx can
+// connect to this socket to adopt the externally created span context,
+// making in-process operations children of the test span.
+//
+// If no OTLP endpoint is configured, go test is executed directly
+// with no overhead.
 package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -34,22 +39,26 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "usage: otelgotest <test-binary> [flags...]\n")
-		fmt.Fprintf(os.Stderr, "  meant to be used with: go test -exec otelgotest\n")
-		os.Exit(1)
-	}
-
 	os.Exit(run())
 }
 
 func run() int {
-	binary := os.Args[1]
-	args := os.Args[2:]
+	args := os.Args[1:]
 
-	// If no OTLP endpoint, just exec the binary directly.
+	// Detect old -exec usage: go test -exec otelgotest passes
+	// a compiled .test binary as the first argument.
+	if len(args) > 0 && looksLikeExecMode(args[0]) {
+		fmt.Fprintf(os.Stderr, "otelgotest: it looks like you're using the old -exec mode.\n")
+		fmt.Fprintf(os.Stderr, "  otelgotest is now a go test wrapper. Use:\n")
+		fmt.Fprintf(os.Stderr, "    otelgotest ./...\n")
+		fmt.Fprintf(os.Stderr, "  instead of:\n")
+		fmt.Fprintf(os.Stderr, "    go test -exec otelgotest ./...\n")
+		return 1
+	}
+
+	// If no OTLP endpoint, just run go test directly.
 	if !hasOTLPEndpoint() {
-		return execDirect(binary, args)
+		return execGoTest(args)
 	}
 
 	ctx := context.Background()
@@ -58,23 +67,16 @@ func run() int {
 
 	tp := otelgo.GetTracerProvider()
 
-	// Replace -test.v with -test.v=test2json for structured output.
-	testArgs := forceTest2JSON(args)
-
-	// Detect package name from the binary path (e.g. "foo.test" -> "foo").
-	pkg := detectPackage(binary)
-
 	// Set up a Unix socket for cross-process span context propagation.
-	// Test binaries using oteltest can connect to this socket to retrieve
-	// the span context of the externally created test span, so that
-	// in-process operations become children of it.
+	// Test binaries using oteltestctx can connect to this socket to
+	// retrieve the span context of the externally created test span.
 	registry := gotest.NewSpanContextRegistry()
 	defer registry.Close()
 
 	tmpDir, err := os.MkdirTemp("", "otelgotest")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "otelgotest: tmpdir: %v\n", err)
-		return execDirect(binary, args)
+		return execGoTest(args)
 	}
 	defer os.RemoveAll(tmpDir)
 
@@ -82,48 +84,30 @@ func run() int {
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "otelgotest: socket listen: %v\n", err)
-		return execDirect(binary, args)
+		return execGoTest(args)
 	}
 	defer listener.Close()
 
 	go serveSpanContexts(listener, registry)
 
-	// Run the test binary, capturing stdout.
-	testCmd := exec.Command(binary, testArgs...)
-	testCmd.Env = append(os.Environ(), "OTEL_TEST_SOCKET="+socketPath)
-	testCmd.Stderr = os.Stderr
-	testCmd.Stdin = os.Stdin
+	// Build the go test -json command, forwarding all user args.
+	goTestArgs := []string{"test", "-json"}
+	goTestArgs = append(goTestArgs, stripJSONFlag(args)...)
 
-	testOut, err := testCmd.StdoutPipe()
+	cmd := exec.Command("go", goTestArgs...)
+	cmd.Env = append(os.Environ(), "OTEL_TEST_SOCKET="+socketPath)
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	jsonOut, err := cmd.StdoutPipe()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "otelgotest: stdout pipe: %v\n", err)
-		return execDirect(binary, args)
+		return execGoTest(args)
 	}
 
-	// Pipe through go tool test2json to get JSON events.
-	test2jsonArgs := []string{"tool", "test2json"}
-	if pkg != "" {
-		test2jsonArgs = append(test2jsonArgs, "-p", pkg)
-	}
-	test2json := exec.Command("go", test2jsonArgs...)
-	test2json.Stdin = testOut
-	test2json.Stderr = os.Stderr
-
-	jsonOut, err := test2json.StdoutPipe()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "otelgotest: test2json pipe: %v\n", err)
-		return execDirect(binary, args)
-	}
-
-	if err := test2json.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "otelgotest: test2json start: %v\n", err)
-		return execDirect(binary, args)
-	}
-
-	if err := testCmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "otelgotest: test binary start: %v\n", err)
-		test2json.Process.Kill()
-		return execDirect(binary, args)
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "otelgotest: start: %v\n", err)
+		return execGoTest(args)
 	}
 
 	// Process JSON events, writing human-readable output to stdout.
@@ -136,19 +120,19 @@ func run() int {
 	}
 	gotest.Run(ctx, jsonOut, tp, opts...)
 
-	// Wait for both processes.
-	testCmd.Wait()
-	test2json.Wait()
+	cmd.Wait()
 
-	if testCmd.ProcessState != nil {
-		return testCmd.ProcessState.ExitCode()
+	if cmd.ProcessState != nil {
+		return cmd.ProcessState.ExitCode()
 	}
 	return 1
 }
 
-// execDirect runs the test binary with no instrumentation.
-func execDirect(binary string, args []string) int {
-	cmd := exec.Command(binary, args...)
+// execGoTest runs go test with no instrumentation.
+func execGoTest(args []string) int {
+	goArgs := []string{"test"}
+	goArgs = append(goArgs, args...)
+	cmd := exec.Command("go", goArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -159,75 +143,28 @@ func execDirect(binary string, args []string) int {
 	return 1
 }
 
-// forceTest2JSON replaces any -test.v flag with -test.v=test2json
-// and ensures the flag is present.
-func forceTest2JSON(args []string) []string {
-	out := []string{"-test.v=test2json"}
+// stripJSONFlag removes -json from args since we add it ourselves.
+func stripJSONFlag(args []string) []string {
+	var out []string
 	for _, arg := range args {
-		if !strings.HasPrefix(arg, "-test.v") {
+		if arg != "-json" {
 			out = append(out, arg)
 		}
 	}
 	return out
 }
 
-// detectPackage determines the full import path of the package under test.
-// When invoked via go test -exec, the working directory is the package's
-// source directory, so we walk up to find go.mod and combine the module
-// path with the relative directory.
-func detectPackage(binary string) string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fallbackPackage(binary)
-	}
-
-	// Walk up from cwd to find go.mod.
-	dir := cwd
-	for {
-		modPath, err := parseModulePath(filepath.Join(dir, "go.mod"))
-		if err == nil {
-			rel, err := filepath.Rel(dir, cwd)
-			if err != nil || rel == "." {
-				return modPath
-			}
-			return modPath + "/" + filepath.ToSlash(rel)
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-
-	return fallbackPackage(binary)
-}
-
-// fallbackPackage extracts a short package name from the test binary path.
-func fallbackPackage(binary string) string {
-	base := filepath.Base(binary)
-	return strings.TrimSuffix(base, ".test")
-}
-
-// parseModulePath reads the module path from a go.mod file.
-func parseModulePath(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "module ")), nil
-		}
-	}
-	return "", fmt.Errorf("no module directive found in %s", path)
+// looksLikeExecMode returns true if arg looks like a compiled test binary,
+// indicating the user is trying the old go test -exec usage.
+func looksLikeExecMode(arg string) bool {
+	return strings.HasSuffix(arg, ".test") || strings.Contains(arg, ".test ")
 }
 
 // serveSpanContexts accepts connections on the Unix socket and responds
 // with the traceparent of the requested test's span. Each connection is a
-// single request/response: the client sends a test name (one line), and
-// the server responds with the W3C traceparent (one line).
+// single request/response: the client sends a package-qualified test name
+// (e.g., "example.com/pkg/TestFoo") on one line, and the server responds
+// with the W3C traceparent on one line.
 func serveSpanContexts(listener net.Listener, registry *gotest.SpanContextRegistry) {
 	for {
 		conn, err := listener.Accept()
@@ -246,12 +183,12 @@ func handleSpanContextConn(conn net.Conn, registry *gotest.SpanContextRegistry) 
 	if !scanner.Scan() {
 		return
 	}
-	testName := scanner.Text()
+	testKey := scanner.Text()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	sc, ok := registry.WaitFor(ctx, testName)
+	sc, ok := registry.WaitFor(ctx, testKey)
 	if !ok {
 		return
 	}

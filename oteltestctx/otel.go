@@ -17,7 +17,9 @@ var propagatedCtx = context.Background()
 
 // testPackage is the import path of the package under test, detected from
 // the test binary's build info (e.g. "example.com/project/pkg").
-var testPackage string
+// It is auto-detected at package init time so that it is available even
+// without calling [Main].
+var testPackage = detectTestPackage()
 
 // Main is a helper function that initializes OTel and runs the tests
 // before exiting. Use it in your TestMain function.
@@ -29,7 +31,6 @@ var testPackage string
 // context to subtests.
 func Main(m *testing.M) int {
 	propagatedCtx = otel.InitEmbedded(context.Background(), nil)
-	testPackage = detectTestPackage()
 	exitCode := m.Run()
 	otel.Close()
 	return exitCode

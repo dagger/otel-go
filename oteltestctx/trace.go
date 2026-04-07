@@ -65,8 +65,11 @@ func WithTracing[T testctx.Runner[T]](cfg ...TraceConfig[T]) testctx.Middleware[
 		return func(ctx context.Context, w *testctx.W[T]) {
 			// If an external coordinator owns the spans, adopt its
 			// span context so in-process operations become children.
+			// The socket protocol uses package-qualified test names
+			// (e.g., "example.com/pkg/TestFoo/sub") so that tests
+			// across packages sharing a single socket don't collide.
 			if spanSocketAddr != "" {
-				if sc, err := requestSpanContext(spanSocketAddr, w.Name()); err == nil && sc.IsValid() {
+				if sc, err := requestSpanContext(spanSocketAddr, testPackage+"/"+w.Name()); err == nil && sc.IsValid() {
 					ctx = trace.ContextWithRemoteSpanContext(ctx, sc)
 					next(ctx, w)
 					return
