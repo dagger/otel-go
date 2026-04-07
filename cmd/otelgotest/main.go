@@ -16,16 +16,21 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	otel "github.com/dagger/otel-go"
 	"github.com/dagger/otel-go/gotest"
 	otelgo "go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func main() {
@@ -59,8 +64,33 @@ func run() int {
 	// Detect package name from the binary path (e.g. "foo.test" -> "foo").
 	pkg := detectPackage(binary)
 
+	// Set up a Unix socket for cross-process span context propagation.
+	// Test binaries using oteltest can connect to this socket to retrieve
+	// the span context of the externally created test span, so that
+	// in-process operations become children of it.
+	registry := gotest.NewSpanContextRegistry()
+	defer registry.Close()
+
+	tmpDir, err := os.MkdirTemp("", "otelgotest")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "otelgotest: tmpdir: %v\n", err)
+		return execDirect(binary, args)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "span.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "otelgotest: socket listen: %v\n", err)
+		return execDirect(binary, args)
+	}
+	defer listener.Close()
+
+	go serveSpanContexts(listener, registry)
+
 	// Run the test binary, capturing stdout.
 	testCmd := exec.Command(binary, testArgs...)
+	testCmd.Env = append(os.Environ(), "OTEL_TEST_SOCKET="+socketPath)
 	testCmd.Stderr = os.Stderr
 	testCmd.Stdin = os.Stdin
 
@@ -97,7 +127,10 @@ func run() int {
 	}
 
 	// Process JSON events, writing human-readable output to stdout.
-	opts := []gotest.Option{gotest.WithOutput(os.Stdout)}
+	opts := []gotest.Option{
+		gotest.WithOutput(os.Stdout),
+		gotest.WithSpanContextRegistry(registry),
+	}
 	if lp := otel.LoggerProvider(ctx); lp != nil {
 		opts = append(opts, gotest.WithLoggerProvider(lp))
 	}
@@ -138,10 +171,96 @@ func forceTest2JSON(args []string) []string {
 	return out
 }
 
-// detectPackage extracts a package name from the test binary path.
+// detectPackage determines the full import path of the package under test.
+// When invoked via go test -exec, the working directory is the package's
+// source directory, so we walk up to find go.mod and combine the module
+// path with the relative directory.
 func detectPackage(binary string) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fallbackPackage(binary)
+	}
+
+	// Walk up from cwd to find go.mod.
+	dir := cwd
+	for {
+		modPath, err := parseModulePath(filepath.Join(dir, "go.mod"))
+		if err == nil {
+			rel, err := filepath.Rel(dir, cwd)
+			if err != nil || rel == "." {
+				return modPath
+			}
+			return modPath + "/" + filepath.ToSlash(rel)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	return fallbackPackage(binary)
+}
+
+// fallbackPackage extracts a short package name from the test binary path.
+func fallbackPackage(binary string) string {
 	base := filepath.Base(binary)
 	return strings.TrimSuffix(base, ".test")
+}
+
+// parseModulePath reads the module path from a go.mod file.
+func parseModulePath(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "module ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "module ")), nil
+		}
+	}
+	return "", fmt.Errorf("no module directive found in %s", path)
+}
+
+// serveSpanContexts accepts connections on the Unix socket and responds
+// with the traceparent of the requested test's span. Each connection is a
+// single request/response: the client sends a test name (one line), and
+// the server responds with the W3C traceparent (one line).
+func serveSpanContexts(listener net.Listener, registry *gotest.SpanContextRegistry) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return // listener closed
+		}
+		go handleSpanContextConn(conn, registry)
+	}
+}
+
+func handleSpanContextConn(conn net.Conn, registry *gotest.SpanContextRegistry) {
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		return
+	}
+	testName := scanner.Text()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sc, ok := registry.WaitFor(ctx, testName)
+	if !ok {
+		return
+	}
+
+	fmt.Fprintf(conn, "%s\n", formatTraceparent(sc))
+}
+
+func formatTraceparent(sc trace.SpanContext) string {
+	return fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
 }
 
 func hasOTLPEndpoint() bool {
