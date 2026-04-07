@@ -243,8 +243,16 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 }
 
 // extractErrorOutput cleans up test output to use as an error description.
-// It strips the file:line prefix that Go's testing package adds.
+// It strips file:line prefixes from Go's testing package and extracts the
+// meaningful content from verbose testify-style error messages (keeping
+// only "Error:" and "Messages:" sections).
 func extractErrorOutput(output string) string {
+	// First try to extract testify-style structured errors.
+	if cleaned := cleanTestifyMessage(output); cleaned != "" {
+		return cleaned
+	}
+
+	// Fall back to simple line-by-line cleanup.
 	var lines []string
 	for _, line := range strings.Split(output, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -261,4 +269,58 @@ func extractErrorOutput(output string) string {
 		lines = append(lines, trimmed)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// cleanTestifyMessage extracts the meaningful content from verbose
+// testify-style error messages. It keeps only "Error:" and "Messages:"
+// sections, stripping "Error Trace:" and "Test:" sections.
+func cleanTestifyMessage(msg string) string {
+	if !strings.Contains(msg, "\tError:") {
+		return ""
+	}
+
+	lines := strings.Split(msg, "\n")
+	var result []string
+	inWanted := false
+	found := false
+
+	for _, line := range lines {
+		// Section headers look like: \t<Name>:<padding>\t<value>
+		if len(line) > 1 && line[0] == '\t' && line[1] != ' ' && line[1] != '\t' {
+			inWanted = false
+			rest := line[1:]
+			colonIdx := strings.Index(rest, ":")
+			if colonIdx < 0 {
+				continue
+			}
+			name := rest[:colonIdx]
+			after := strings.TrimLeft(rest[colonIdx+1:], " ")
+			if len(after) == 0 || after[0] != '\t' {
+				continue
+			}
+			if name == "Error" || name == "Messages" {
+				inWanted = true
+				found = true
+				if v := strings.TrimSpace(after[1:]); v != "" {
+					result = append(result, v)
+				}
+			}
+			continue
+		}
+
+		// Continuation lines look like: \t<spaces>\t<value>
+		if inWanted && len(line) > 0 && line[0] == '\t' {
+			rest := strings.TrimLeft(line[1:], " ")
+			if len(rest) > 0 && rest[0] == '\t' {
+				if v := strings.TrimSpace(rest[1:]); v != "" {
+					result = append(result, v)
+				}
+			}
+		}
+	}
+
+	if found && len(result) > 0 {
+		return strings.Join(result, "\n")
+	}
+	return ""
 }
