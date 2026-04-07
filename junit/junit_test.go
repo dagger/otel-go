@@ -84,8 +84,7 @@ func TestSkippedTest(t *testing.T) {
 func TestSuiteSpan(t *testing.T) {
 	spans := runFixture(t)
 
-	// go-junit-report emits an empty suite name; we fall back to "suite".
-	suite := findSpan(spans, "suite")
+	suite := findSpan(spans, "github.com/dagger/otel-test-reporter/testdata/sample")
 	require.NotNil(t, suite, "expected suite span")
 
 	// Suite has failures so it should be marked as error.
