@@ -3,6 +3,7 @@ module github.com/dagger/otel-go
 go 1.25.0
 
 require (
+	github.com/joshdk/go-junit v1.0.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.17.0

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="github.com/example/pkg" tests="5" failures="1" errors="0" skipped="1" time="0.123">
+    <testcase name="TestPass" classname="pkg" time="0.010">
+      <system-out>this test passes</system-out>
+    </testcase>
+    <testcase name="TestFail" classname="pkg" time="0.015">
+      <failure message="something went wrong">    sample_test.go:15: something went wrong</failure>
+    </testcase>
+    <testcase name="TestSkip" classname="pkg" time="0.001">
+      <skipped message="not implemented yet"/>
+    </testcase>
+    <testcase name="TestSub/level1" classname="pkg" time="0.005">
+      <system-out>in level1</system-out>
+    </testcase>
+    <testcase name="TestSub/level1/level2" classname="pkg" time="0.003">
+      <system-out>in level2</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>
