@@ -176,6 +176,31 @@ func TestOutputCaptured(t *testing.T) {
 	assert.True(t, found, "expected output event containing 'this test passes', got events: %v", events)
 }
 
+func TestSkippedPackage(t *testing.T) {
+	spanRecorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
+
+	// Simulate what go test -json emits for a package with no test files:
+	//   {"Action":"start","Package":"example.com/nopkg"}
+	//   {"Action":"output","Package":"example.com/nopkg","Output":"? \texample.com/nopkg\t[no test files]\n"}
+	//   {"Action":"skip","Package":"example.com/nopkg"}
+	events := `{"Time":"2025-01-01T00:00:00Z","Action":"start","Package":"example.com/nopkg"}
+{"Time":"2025-01-01T00:00:00Z","Action":"output","Package":"example.com/nopkg","Output":"? \texample.com/nopkg\t[no test files]\n"}
+{"Time":"2025-01-01T00:00:00Z","Action":"skip","Package":"example.com/nopkg"}
+`
+
+	err := gotest.Run(t.Context(), strings.NewReader(events), tp)
+	require.NoError(t, err)
+
+	spans := spanRecorder.Ended()
+	require.Len(t, spans, 1, "expected the skipped package span to be ended")
+
+	pkg := spans[0]
+	assert.Equal(t, "example.com/nopkg", pkg.Name())
+	assert.Equal(t, codes.Ok, pkg.Status().Code)
+	assert.Contains(t, pkg.Attributes(), semconv.TestSuiteRunStatusSkipped)
+}
+
 func TestSpanCount(t *testing.T) {
 	spans := runFixture(t)
 
