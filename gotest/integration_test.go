@@ -16,6 +16,7 @@ import (
 	"github.com/dagger/testctx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -303,6 +304,100 @@ func TestSpanContextWithMiddleware(t *testing.T) {
 		"downstream should share trace ID with gotest span")
 	assert.Equal(t, gotestSpan.SpanContext().SpanID(), downstreamSpan.Parent().SpanID(),
 		"downstream should be parented under gotest span")
+}
+
+// TestErrorMessageCleaning verifies that verbose testify-style error
+// messages in test output are cleaned up for the span status description.
+func TestErrorMessageCleaning(t *testing.T) {
+	spanRecorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
+
+	pr, pw := io.Pipe()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- gotest.Run(t.Context(), pr, tp)
+	}()
+
+	now := time.Now()
+	enc := json.NewEncoder(pw)
+	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
+	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestVerbose"})
+
+	// Simulate testify-formatted error output as test2json would emit it.
+	// Go's testing package adds "    file.go:line: " to the first line;
+	// subsequent lines of the multi-line testify message have literal tabs.
+	for _, line := range []string{
+		"    test.go:42: \n",
+		"\tError Trace:\t/src/test.go:42\n",
+		"\t            \t\t\t/src/helper.go:10\n",
+		"\tError:      \tExpected nil, but got error\n",
+		"\tTest:       \tTestVerbose\n",
+	} {
+		enc.Encode(gotest.TestEvent{Time: now, Action: "output", Package: "example.com/pkg", Test: "TestVerbose", Output: line})
+	}
+
+	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg", Test: "TestVerbose", Elapsed: 0.01})
+	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg"})
+	pw.Close()
+
+	require.NoError(t, <-done)
+
+	spans := spanRecorder.Ended()
+	span := findSpan(spans, "TestVerbose")
+	require.NotNil(t, span)
+
+	assert.Equal(t, codes.Error, span.Status().Code)
+	assert.Equal(t, "Expected nil, but got error", span.Status().Description,
+		"span status should contain only the cleaned error, not the full trace")
+}
+
+// TestErrorMessageCleaningWithNoise verifies that when testify errors are
+// mixed with regular log output, only the error content appears in the
+// span status.
+func TestErrorMessageCleaningWithNoise(t *testing.T) {
+	spanRecorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
+
+	pr, pw := io.Pipe()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- gotest.Run(t.Context(), pr, tp)
+	}()
+
+	now := time.Now()
+	enc := json.NewEncoder(pw)
+	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
+	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestNoisy"})
+
+	// Mix of regular log output and testify error.
+	for _, line := range []string{
+		"    test.go:10: some log output\n",
+		"    test.go:20: more log output\n",
+		"    test.go:42: \n",
+		"\tError Trace:\t/src/test.go:42\n",
+		"\tError:      \tCondition never satisfied\n",
+		"\tTest:       \tTestNoisy\n",
+		"    test.go:50: cleanup: exit status 1\n",
+		"    test.go:60: server: shutting down\n",
+	} {
+		enc.Encode(gotest.TestEvent{Time: now, Action: "output", Package: "example.com/pkg", Test: "TestNoisy", Output: line})
+	}
+
+	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg", Test: "TestNoisy", Elapsed: 0.01})
+	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg"})
+	pw.Close()
+
+	require.NoError(t, <-done)
+
+	spans := spanRecorder.Ended()
+	span := findSpan(spans, "TestNoisy")
+	require.NotNil(t, span)
+
+	assert.Equal(t, codes.Error, span.Status().Code)
+	assert.Equal(t, "Condition never satisfied", span.Status().Description,
+		"span status should contain only the cleaned error, not log noise")
 }
 
 // --- helpers ---
