@@ -3,6 +3,7 @@ package junit_test
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/dagger/otel-go/junit"
 	"github.com/stretchr/testify/assert"
@@ -101,12 +102,33 @@ func TestSubtestSpanName(t *testing.T) {
 	spans := runFixture(t)
 
 	// JUnit flattens subtests as "TestSub/level1/level2".
-	// Span name should be the leaf: "level2".
-	span := findSpan(spans, "level2")
-	require.NotNil(t, span, "expected span with leaf name 'level2'")
+	// Span name should be the raw test name, not simplified.
+	span := findSpan(spans, "TestSub/level1/level2")
+	require.NotNil(t, span, "expected span with full name 'TestSub/level1/level2'")
 
 	assert.Equal(t, "TestSub/level1/level2",
 		spanAttr(span, semconv.TestCaseNameKey).AsString())
+}
+
+func TestTimestamp(t *testing.T) {
+	spans := runFixture(t)
+
+	// The sample XML has timestamp="2026-04-06T22:30:03-04:00" on the suite.
+	expectedStart, err := time.Parse(time.RFC3339, "2026-04-06T22:30:03-04:00")
+	require.NoError(t, err)
+
+	suite := findSpan(spans, "github.com/dagger/otel-go/gotest/testdata/sample")
+	require.NotNil(t, suite)
+	assert.Equal(t, expectedStart, suite.StartTime(), "suite should start at XML timestamp")
+
+	// Test spans should also start at the suite timestamp.
+	pass := findSpan(spans, "TestPass")
+	require.NotNil(t, pass)
+	assert.Equal(t, expectedStart, pass.StartTime(), "test should start at suite timestamp")
+
+	// End time = start + duration (TestPass has time="0.010").
+	assert.Equal(t, expectedStart.Add(10*time.Millisecond), pass.EndTime(),
+		"test end time should be start + duration")
 }
 
 func TestSpanCount(t *testing.T) {
