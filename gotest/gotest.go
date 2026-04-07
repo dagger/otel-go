@@ -130,6 +130,13 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					ps.span.End(trace.WithTimestamp(ev.Time))
 					delete(pkgSpans, ev.Package)
 				}
+			case "skip":
+				if ps, ok := pkgSpans[ev.Package]; ok {
+					ps.span.SetStatus(codes.Ok, "skipped")
+					ps.span.SetAttributes(semconv.TestSuiteRunStatusSkipped)
+					ps.span.End(trace.WithTimestamp(ev.Time))
+					delete(pkgSpans, ev.Package)
+				}
 			}
 			continue
 		}
