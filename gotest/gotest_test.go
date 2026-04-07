@@ -125,6 +125,23 @@ func TestSubtestNesting(t *testing.T) {
 		spanAttr(grandchild, semconv.TestCaseNameKey).AsString())
 }
 
+func TestPackageSpan(t *testing.T) {
+	spans := runFixture(t)
+
+	pkg := findSpan(spans, "github.com/dagger/otel-go/gotest/testdata/sample")
+	require.NotNil(t, pkg, "expected package span")
+
+	// Package has a failure so it should be marked as error.
+	assert.Equal(t, codes.Error, pkg.Status().Code)
+	assert.Contains(t, pkg.Attributes(), semconv.TestSuiteRunStatusFailure)
+
+	// Top-level tests should be children of the package span.
+	pass := findSpan(spans, "TestPass")
+	require.NotNil(t, pass)
+	assert.Equal(t, pkg.SpanContext().SpanID(), pass.Parent().SpanID(),
+		"TestPass should be a child of the package span")
+}
+
 func TestParallelTests(t *testing.T) {
 	spans := runFixture(t)
 
@@ -162,9 +179,10 @@ func TestOutputCaptured(t *testing.T) {
 func TestSpanCount(t *testing.T) {
 	spans := runFixture(t)
 
+	// 1 package +
 	// TestPass, TestFail, TestSkip,
 	// TestSub, TestSub/level1, TestSub/level1/level2,
 	// TestParallel, TestParallel/a, TestParallel/b
-	// = 9 total
-	assert.Len(t, spans, 9)
+	// = 10 total
+	assert.Len(t, spans, 10)
 }

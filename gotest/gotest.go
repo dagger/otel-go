@@ -47,6 +47,7 @@ type Option func(*runConfig)
 type runConfig struct {
 	output         io.Writer
 	loggerProvider *sdklog.LoggerProvider
+	registry       *SpanContextRegistry
 }
 
 // WithOutput passes through the human-readable test output (the Output
@@ -63,6 +64,14 @@ func WithLoggerProvider(lp *sdklog.LoggerProvider) Option {
 	return func(c *runConfig) { c.loggerProvider = lp }
 }
 
+// WithSpanContextRegistry configures a [SpanContextRegistry] that receives
+// the span context of every test span created by [Run]. This allows an
+// external coordinator (e.g., a Unix socket server) to serve span contexts
+// to the test binary for cross-process context propagation.
+func WithSpanContextRegistry(r *SpanContextRegistry) Option {
+	return func(c *runConfig) { c.registry = r }
+}
+
 // Run reads a go test -json stream and emits OTel spans in real time.
 func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Option) error {
 	var cfg runConfig
@@ -74,6 +83,9 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 
 	// key: "package/TestName" or "package/TestName/sub"
 	spans := map[string]*testSpan{}
+
+	// pkgSpans tracks a parent span per package.
+	pkgSpans := map[string]*testSpan{}
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -87,8 +99,35 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			io.WriteString(cfg.output, ev.Output)
 		}
 
-		// Skip package-level events (no test name).
+		// Handle package-level events (no test name).
 		if ev.Test == "" {
+			switch ev.Action {
+			case "start":
+				pkgCtx, pkgSpan := tracer.Start(ctx, ev.Package,
+					trace.WithTimestamp(ev.Time),
+					trace.WithAttributes(
+						semconv.TestSuiteName(ev.Package),
+					),
+				)
+				pkgSpans[ev.Package] = &testSpan{
+					span: pkgSpan,
+					ctx:  pkgCtx,
+				}
+			case "pass":
+				if ps, ok := pkgSpans[ev.Package]; ok {
+					ps.span.SetStatus(codes.Ok, "")
+					ps.span.SetAttributes(semconv.TestCaseResultStatusPass)
+					ps.span.End(trace.WithTimestamp(ev.Time))
+					delete(pkgSpans, ev.Package)
+				}
+			case "fail":
+				if ps, ok := pkgSpans[ev.Package]; ok {
+					ps.span.SetStatus(codes.Error, "package had failures")
+					ps.span.SetAttributes(semconv.TestSuiteRunStatusFailure)
+					ps.span.End(trace.WithTimestamp(ev.Time))
+					delete(pkgSpans, ev.Package)
+				}
+			}
 			continue
 		}
 
@@ -96,8 +135,12 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 
 		switch ev.Action {
 		case "run":
+			// Default parent is the package span, or the top-level ctx.
 			parentCtx := ctx
-			// For subtests, find the parent span.
+			if ps, ok := pkgSpans[ev.Package]; ok {
+				parentCtx = ps.ctx
+			}
+			// For subtests, find the parent test span.
 			if idx := strings.LastIndex(ev.Test, "/"); idx != -1 {
 				parentKey := ev.Package + "/" + ev.Test[:idx]
 				if ps, ok := spans[parentKey]; ok {
@@ -129,6 +172,10 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				ts.streams = &streams
 			}
 			spans[key] = ts
+
+			if cfg.registry != nil {
+				cfg.registry.Register(ev.Test, span.SpanContext())
+			}
 
 		case "output":
 			if ts, ok := spans[key]; ok {
