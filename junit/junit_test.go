@@ -84,7 +84,7 @@ func TestSkippedTest(t *testing.T) {
 func TestSuiteSpan(t *testing.T) {
 	spans := runFixture(t)
 
-	suite := findSpan(spans, "github.com/dagger/otel-test-reporter/testdata/sample")
+	suite := findSpan(spans, "github.com/dagger/otel-go/gotest/testdata/sample")
 	require.NotNil(t, suite, "expected suite span")
 
 	// Suite has failures so it should be marked as error.
