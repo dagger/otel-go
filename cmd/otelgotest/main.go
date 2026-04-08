@@ -91,8 +91,9 @@ func run() int {
 	go serveSpanContexts(listener, registry)
 
 	// Build the go test -json command, forwarding all user args.
-	goTestArgs := []string{"test", "-json"}
-	goTestArgs = append(goTestArgs, stripJSONFlag(args)...)
+	// If the user supplied a leading -C flag, it must stay before -json
+	// because the go command requires -C to be the first flag.
+	goTestArgs := buildGoTestArgs(args)
 
 	cmd := exec.Command("go", goTestArgs...)
 	cmd.Env = append(os.Environ(), "OTEL_TEST_SOCKET="+socketPath)
@@ -142,6 +143,42 @@ func execGoTest(args []string) int {
 		return cmd.ProcessState.ExitCode()
 	}
 	return 1
+}
+
+// buildGoTestArgs constructs the instrumented go test command line.
+//
+// If the user supplied a leading -C flag, it must stay before -json
+// because the go command requires -C to be the first flag.
+func buildGoTestArgs(args []string) []string {
+	chdirArgs, rest := splitLeadingChdirFlags(args)
+
+	out := []string{"test"}
+	out = append(out, chdirArgs...)
+	out = append(out, "-json")
+	out = append(out, stripJSONFlag(rest)...)
+	return out
+}
+
+// splitLeadingChdirFlags extracts any leading -C flags from args.
+// It supports both "-C dir" and "-C=dir" forms.
+func splitLeadingChdirFlags(args []string) (chdirArgs, rest []string) {
+	rest = args
+	for len(rest) > 0 {
+		switch {
+		case rest[0] == "-C":
+			if len(rest) < 2 {
+				return chdirArgs, rest
+			}
+			chdirArgs = append(chdirArgs, rest[0], rest[1])
+			rest = rest[2:]
+		case strings.HasPrefix(rest[0], "-C="):
+			chdirArgs = append(chdirArgs, rest[0])
+			rest = rest[1:]
+		default:
+			return chdirArgs, rest
+		}
+	}
+	return chdirArgs, rest
 }
 
 // stripJSONFlag removes -json from args since we add it ourselves.
