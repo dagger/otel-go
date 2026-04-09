@@ -34,11 +34,12 @@ type TestEvent struct {
 
 // testSpan tracks an in-flight span for a single test.
 type testSpan struct {
-	span         trace.Span
-	ctx          context.Context
-	output       strings.Builder
-	streams      *otel.SpanStreams
-	bufferedOut  strings.Builder // buffered output for non-verbose mode
+	span        trace.Span
+	ctx         context.Context
+	testName    string
+	output      strings.Builder
+	streams     *otel.SpanStreams
+	bufferedOut strings.Builder // buffered output for non-verbose mode
 }
 
 // Option configures the behavior of Run.
@@ -98,8 +99,15 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 
 	tracer := tp.Tracer(instrumentationLibrary)
 
-	// key: "package/TestName" or "package/TestName/sub"
+	// key: package-qualified full test name (package + "/" + ev.Test).
 	spans := map[string]*testSpan{}
+
+	// activeTests tracks currently running tests per package. A test is active
+	// after "run" or "cont", inactive after "pause", and removed after
+	// "pass"/"fail"/"skip". Parentage is derived from the longest active
+	// test name prefix instead of splitting ev.Test on '/'; this preserves leaf
+	// names that themselves contain '/'.
+	activeTests := map[string]map[string]struct{}{}
 
 	// pkgSpans tracks a parent span per package.
 	pkgSpans := map[string]*testSpan{}
@@ -151,6 +159,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					ps.span.End(trace.WithTimestamp(ev.Time))
 					delete(pkgSpans, ev.Package)
 				}
+				delete(activeTests, ev.Package)
 			case "fail":
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Error, "package had failures")
@@ -158,6 +167,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					ps.span.End(trace.WithTimestamp(ev.Time))
 					delete(pkgSpans, ev.Package)
 				}
+				delete(activeTests, ev.Package)
 			case "skip":
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Ok, "skipped")
@@ -165,6 +175,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					ps.span.End(trace.WithTimestamp(ev.Time))
 					delete(pkgSpans, ev.Package)
 				}
+				delete(activeTests, ev.Package)
 			}
 			continue
 		}
@@ -175,21 +186,29 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 		case "run":
 			// Default parent is the package span, or the top-level ctx.
 			parentCtx := ctx
+			var parentName string
 			if ps, ok := pkgSpans[ev.Package]; ok {
 				parentCtx = ps.ctx
 			}
-			// For subtests, find the parent test span.
-			if idx := strings.LastIndex(ev.Test, "/"); idx != -1 {
-				parentKey := ev.Package + "/" + ev.Test[:idx]
-				if ps, ok := spans[parentKey]; ok {
-					parentCtx = ps.ctx
+			if active := activeTests[ev.Package]; active != nil {
+				longest := -1
+				for activeKey := range active {
+					ts, ok := spans[activeKey]
+					if !ok {
+						continue
+					}
+					prefix := ts.testName + "/"
+					if strings.HasPrefix(ev.Test, prefix) && len(ts.testName) > longest {
+						parentCtx = ts.ctx
+						parentName = ts.testName
+						longest = len(ts.testName)
+					}
 				}
 			}
 
-			// Span name is the base name (leaf).
 			spanName := ev.Test
-			if idx := strings.LastIndex(ev.Test, "/"); idx != -1 {
-				spanName = ev.Test[idx+1:]
+			if parentName != "" {
+				spanName = strings.TrimPrefix(ev.Test, parentName+"/")
 			}
 
 			spanCtx, span := tracer.Start(parentCtx, spanName,
@@ -201,8 +220,9 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			)
 
 			ts := &testSpan{
-				span: span,
-				ctx:  spanCtx,
+				span:     span,
+				ctx:      spanCtx,
+				testName: ev.Test,
 			}
 			if cfg.loggerProvider != nil {
 				spanCtx = otel.WithLoggerProvider(spanCtx, cfg.loggerProvider)
@@ -210,9 +230,26 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				ts.streams = &streams
 			}
 			spans[key] = ts
+			if activeTests[ev.Package] == nil {
+				activeTests[ev.Package] = map[string]struct{}{}
+			}
+			activeTests[ev.Package][key] = struct{}{}
 
 			if cfg.registry != nil {
 				cfg.registry.Register(key, span.SpanContext())
+			}
+
+		case "pause":
+			if active := activeTests[ev.Package]; active != nil {
+				delete(active, key)
+			}
+
+		case "cont":
+			if _, ok := spans[key]; ok {
+				if activeTests[ev.Package] == nil {
+					activeTests[ev.Package] = map[string]struct{}{}
+				}
+				activeTests[ev.Package][key] = struct{}{}
 			}
 
 		case "output":
@@ -238,6 +275,9 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			}
 
 		case "pass":
+			if active := activeTests[ev.Package]; active != nil {
+				delete(active, key)
+			}
 			if ts, ok := spans[key]; ok {
 				if ts.streams != nil {
 					ts.streams.Close()
@@ -250,6 +290,9 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			}
 
 		case "fail":
+			if active := activeTests[ev.Package]; active != nil {
+				delete(active, key)
+			}
 			if ts, ok := spans[key]; ok {
 				if ts.streams != nil {
 					ts.streams.Close()
@@ -269,6 +312,9 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			}
 
 		case "skip":
+			if active := activeTests[ev.Package]; active != nil {
+				delete(active, key)
+			}
 			if ts, ok := spans[key]; ok {
 				if ts.streams != nil {
 					ts.streams.Close()

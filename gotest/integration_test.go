@@ -306,17 +306,10 @@ func TestSpanContextWithMiddleware(t *testing.T) {
 	// Find the spans.
 	spans := spanRecorder.Ended()
 
-	var gotestSpan sdktrace.ReadOnlySpan
-	var downstreamSpan sdktrace.ReadOnlySpan
-	for _, s := range spans {
-		switch s.Name() {
-		case "inner":
-			gotestSpan = s
-		case "downstream-call":
-			downstreamSpan = s
-		}
-	}
-	require.NotNil(t, gotestSpan, "expected gotest span 'inner'")
+	gotestSpan := findSpanByTestCaseName(spans, fullTestName)
+	require.NotNil(t, gotestSpan, "expected gotest span for %q", fullTestName)
+
+	downstreamSpan := findSpan(spans, "downstream-call")
 	require.NotNil(t, downstreamSpan, "expected downstream-call span")
 
 	// The downstream span should be a child of the gotest span.
