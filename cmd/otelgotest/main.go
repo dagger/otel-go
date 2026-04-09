@@ -25,6 +25,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -111,16 +112,23 @@ func run() int {
 		return execGoTest(args)
 	}
 
-	// Process JSON events, writing human-readable output to stdout.
+	// Process JSON events while preserving the user's requested output mode.
+	stream := io.Reader(jsonOut)
 	opts := []gotest.Option{
-		gotest.WithOutput(os.Stdout),
-		gotest.WithVerbose(hasVerboseFlag(args)),
 		gotest.WithSpanContextRegistry(registry),
+	}
+	if hasJSONFlag(args) {
+		stream = io.TeeReader(jsonOut, os.Stdout)
+	} else {
+		opts = append(opts,
+			gotest.WithOutput(os.Stdout),
+			gotest.WithVerbose(hasVerboseFlag(args)),
+		)
 	}
 	if lp := otel.LoggerProvider(ctx); lp != nil {
 		opts = append(opts, gotest.WithLoggerProvider(lp))
 	}
-	gotest.Run(ctx, jsonOut, tp, opts...)
+	gotest.Run(ctx, stream, tp, opts...)
 
 	cmd.Wait()
 
@@ -181,11 +189,11 @@ func splitLeadingChdirFlags(args []string) (chdirArgs, rest []string) {
 	return chdirArgs, rest
 }
 
-// stripJSONFlag removes -json from args since we add it ourselves.
+// stripJSONFlag removes any user-supplied -json form since we add it ourselves.
 func stripJSONFlag(args []string) []string {
 	var out []string
 	for _, arg := range args {
-		if arg != "-json" {
+		if arg != "-json" && arg != "-json=true" && arg != "-json=false" {
 			out = append(out, arg)
 		}
 	}
@@ -245,7 +253,19 @@ func hasVerboseFlag(args []string) bool {
 			arg == "-v=true" || arg == "-test.v=true" {
 			return true
 		}
-		// Stop at -- or first non-flag argument.
+		if arg == "--" {
+			break
+		}
+	}
+	return false
+}
+
+// hasJSONFlag checks if -json is present in the user's args.
+func hasJSONFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-json" || arg == "-json=true" {
+			return true
+		}
 		if arg == "--" {
 			break
 		}
