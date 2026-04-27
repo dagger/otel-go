@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="9" failures="1" skipped="1">
+	<testsuite name="github.com/dagger/otel-go/gotest/testdata/sample" tests="9" failures="1" errors="0" id="0" hostname="fdesk" skipped="1" time="0.047" timestamp="2026-04-06T22:30:03-04:00">
+		<testcase name="TestPass" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.010">
+			<system-out><![CDATA[    sample_test.go:10: this test passes]]></system-out>
+		</testcase>
+		<testcase name="TestFail" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.010">
+			<failure message="Failed"><![CDATA[    sample_test.go:15: something went wrong]]></failure>
+		</testcase>
+		<testcase name="TestSkip" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.000">
+			<skipped message="Skipped"><![CDATA[    sample_test.go:19: not implemented yet]]></skipped>
+		</testcase>
+		<testcase name="TestSub" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.010"></testcase>
+		<testcase name="TestSub/level1" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.010">
+			<system-out><![CDATA[    sample_test.go:24: in level1]]></system-out>
+		</testcase>
+		<testcase name="TestSub/level1/level2" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.010">
+			<system-out><![CDATA[    sample_test.go:27: in level2]]></system-out>
+		</testcase>
+		<testcase name="TestParallel" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.000"></testcase>
+		<testcase name="TestParallel/a" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.020"></testcase>
+		<testcase name="TestParallel/b" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.020">
+			<system-out><![CDATA[    sample_test.go:36: parallel a done
+    sample_test.go:41: parallel b done]]></system-out>
+		</testcase>
+	</testsuite>
+</testsuites>

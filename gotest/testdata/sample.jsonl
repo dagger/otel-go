@@ -1,0 +1,55 @@
+{"Time":"2026-04-06T22:29:47.171257724-04:00","Action":"start","Package":"github.com/dagger/otel-go/gotest/testdata/sample"}
+{"Time":"2026-04-06T22:29:47.172671915-04:00","Action":"run","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestPass"}
+{"Time":"2026-04-06T22:29:47.17269584-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestPass","Output":"=== RUN   TestPass\n"}
+{"Time":"2026-04-06T22:29:47.182860694-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestPass","Output":"    sample_test.go:10: this test passes\n"}
+{"Time":"2026-04-06T22:29:47.182919194-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestPass","Output":"--- PASS: TestPass (0.01s)\n"}
+{"Time":"2026-04-06T22:29:47.182926418-04:00","Action":"pass","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestPass","Elapsed":0.01}
+{"Time":"2026-04-06T22:29:47.182945424-04:00","Action":"run","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestFail"}
+{"Time":"2026-04-06T22:29:47.182947698-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestFail","Output":"=== RUN   TestFail\n"}
+{"Time":"2026-04-06T22:29:47.192960815-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestFail","Output":"    sample_test.go:15: something went wrong\n"}
+{"Time":"2026-04-06T22:29:47.192986083-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestFail","Output":"--- FAIL: TestFail (0.01s)\n"}
+{"Time":"2026-04-06T22:29:47.192992235-04:00","Action":"fail","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestFail","Elapsed":0.01}
+{"Time":"2026-04-06T22:29:47.192998466-04:00","Action":"run","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSkip"}
+{"Time":"2026-04-06T22:29:47.19300023-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSkip","Output":"=== RUN   TestSkip\n"}
+{"Time":"2026-04-06T22:29:47.193003666-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSkip","Output":"    sample_test.go:19: not implemented yet\n"}
+{"Time":"2026-04-06T22:29:47.193005981-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSkip","Output":"--- SKIP: TestSkip (0.00s)\n"}
+{"Time":"2026-04-06T22:29:47.193007974-04:00","Action":"skip","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSkip","Elapsed":0}
+{"Time":"2026-04-06T22:29:47.193009948-04:00","Action":"run","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub"}
+{"Time":"2026-04-06T22:29:47.193011291-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub","Output":"=== RUN   TestSub\n"}
+{"Time":"2026-04-06T22:29:47.193014797-04:00","Action":"run","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1"}
+{"Time":"2026-04-06T22:29:47.19301607-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1","Output":"=== RUN   TestSub/level1\n"}
+{"Time":"2026-04-06T22:29:47.193017593-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1","Output":"    sample_test.go:24: in level1\n"}
+{"Time":"2026-04-06T22:29:47.193020568-04:00","Action":"run","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1/level2"}
+{"Time":"2026-04-06T22:29:47.193021801-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1/level2","Output":"=== RUN   TestSub/level1/level2\n"}
+{"Time":"2026-04-06T22:29:47.198200299-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1/level2","Output":"    sample_test.go:27: in level2\n"}
+{"Time":"2026-04-06T22:29:47.198233371-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1/level2","Output":"--- PASS: TestSub/level1/level2 (0.01s)\n"}
+{"Time":"2026-04-06T22:29:47.198267536-04:00","Action":"pass","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1/level2","Elapsed":0.01}
+{"Time":"2026-04-06T22:29:47.198272335-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1","Output":"--- PASS: TestSub/level1 (0.01s)\n"}
+{"Time":"2026-04-06T22:29:47.198274409-04:00","Action":"pass","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub/level1","Elapsed":0.01}
+{"Time":"2026-04-06T22:29:47.198283005-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub","Output":"--- PASS: TestSub (0.01s)\n"}
+{"Time":"2026-04-06T22:29:47.198285019-04:00","Action":"pass","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestSub","Elapsed":0.01}
+{"Time":"2026-04-06T22:29:47.198287433-04:00","Action":"run","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel"}
+{"Time":"2026-04-06T22:29:47.19829071-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel","Output":"=== RUN   TestParallel\n"}
+{"Time":"2026-04-06T22:29:47.198292693-04:00","Action":"run","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/a"}
+{"Time":"2026-04-06T22:29:47.198294136-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/a","Output":"=== RUN   TestParallel/a\n"}
+{"Time":"2026-04-06T22:29:47.198295869-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/a","Output":"=== PAUSE TestParallel/a\n"}
+{"Time":"2026-04-06T22:29:47.198297052-04:00","Action":"pause","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/a"}
+{"Time":"2026-04-06T22:29:47.198298735-04:00","Action":"run","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/b"}
+{"Time":"2026-04-06T22:29:47.198299887-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/b","Output":"=== RUN   TestParallel/b\n"}
+{"Time":"2026-04-06T22:29:47.19830139-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/b","Output":"=== PAUSE TestParallel/b\n"}
+{"Time":"2026-04-06T22:29:47.198302532-04:00","Action":"pause","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/b"}
+{"Time":"2026-04-06T22:29:47.198303995-04:00","Action":"cont","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/a"}
+{"Time":"2026-04-06T22:29:47.198305177-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/a","Output":"=== CONT  TestParallel/a\n"}
+{"Time":"2026-04-06T22:29:47.198313863-04:00","Action":"cont","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/b"}
+{"Time":"2026-04-06T22:29:47.19831759-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/b","Output":"=== CONT  TestParallel/b\n"}
+{"Time":"2026-04-06T22:29:47.218444966-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/a","Output":"    sample_test.go:36: parallel a done\n"}
+{"Time":"2026-04-06T22:29:47.218457891-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/b","Output":"    sample_test.go:41: parallel b done\n"}
+{"Time":"2026-04-06T22:29:47.21846286-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/a","Output":"--- PASS: TestParallel/a (0.02s)\n"}
+{"Time":"2026-04-06T22:29:47.218464713-04:00","Action":"pass","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/a","Elapsed":0.02}
+{"Time":"2026-04-06T22:29:47.218472498-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/b","Output":"--- PASS: TestParallel/b (0.02s)\n"}
+{"Time":"2026-04-06T22:29:47.218474462-04:00","Action":"pass","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel/b","Elapsed":0.02}
+{"Time":"2026-04-06T22:29:47.218475895-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel","Output":"--- PASS: TestParallel (0.00s)\n"}
+{"Time":"2026-04-06T22:29:47.21848385-04:00","Action":"pass","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Test":"TestParallel","Elapsed":0}
+{"Time":"2026-04-06T22:29:47.218485693-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Output":"FAIL\n"}
+{"Time":"2026-04-06T22:29:47.21880723-04:00","Action":"output","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Output":"FAIL\tgithub.com/dagger/otel-go/gotest/testdata/sample\t0.047s\n"}
+{"Time":"2026-04-06T22:29:47.218823822-04:00","Action":"fail","Package":"github.com/dagger/otel-go/gotest/testdata/sample","Elapsed":0.048}
