@@ -37,9 +37,7 @@ type TestEvent struct {
 type testSpan struct {
 	span      trace.Span
 	spanStart time.Time
-	// ctx is the original test span context used to parent subtests. For
-	// parallel tests, it intentionally remains the pre-PAUSE span even after
-	// ts.span is replaced by the internal continuation span.
+	// ctx is the test span context used to parent subtests.
 	ctx         context.Context
 	parentCtx   context.Context
 	testName    string
@@ -49,10 +47,10 @@ type testSpan struct {
 	bufferedOut strings.Builder // buffered output for non-verbose mode
 
 	// When a test calls t.Parallel(), go test emits a pause event while the test
-	// waits to be scheduled. End the current span at pause time and remember its
-	// context so the continuation span can link back to it when cont is emitted.
-	pausedSpanContext trace.SpanContext
-	paused            bool
+	// waits to be scheduled. Keep the test span intact and create a separate span
+	// for the paused duration so the wait can be represented independently.
+	pauseSpan trace.Span
+	paused    bool
 }
 
 // Option configures the behavior of Run.
@@ -112,6 +110,17 @@ func spanEndTime(ts *testSpan, ev TestEvent) time.Time {
 		return ts.spanStart.Add(elapsedDuration(ev.Elapsed))
 	}
 	return ev.Time
+}
+
+func endPauseSpan(ts *testSpan, at time.Time) {
+	if ts == nil {
+		return
+	}
+	if ts.pauseSpan != nil {
+		ts.pauseSpan.End(trace.WithTimestamp(at))
+		ts.pauseSpan = nil
+	}
+	ts.paused = false
 }
 
 // Run reads a go test -json stream and emits OTel spans in real time.
@@ -274,45 +283,28 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				delete(active, key)
 			}
 			if ts, ok := spans[key]; ok && !ts.paused {
-				// Keep ts.streams open so all test output remains associated with
-				// the original, user-facing span rather than the internal continuation.
-				ts.pausedSpanContext = ts.span.SpanContext()
+				_, pauseSpan := tracer.Start(ts.parentCtx, ts.spanName+" (paused)",
+					trace.WithTimestamp(ev.Time),
+					trace.WithAttributes(
+						semconv.TestSuiteName(ev.Package),
+						attribute.Bool(dagotel.UIInternalAttr, true),
+						attribute.Bool(dagotel.UIPassthroughAttr, true),
+					),
+					trace.WithLinks(trace.Link{
+						SpanContext: ts.span.SpanContext(),
+						Attributes: []attribute.KeyValue{
+							attribute.String(dagotel.LinkPurposeAttr, dagotel.LinkPurposePaused),
+						},
+					}),
+				)
+				ts.pauseSpan = pauseSpan
 				ts.paused = true
-				ts.span.End(trace.WithTimestamp(ev.Time))
 			}
 
 		case "cont":
 			if ts, ok := spans[key]; ok {
 				if ts.paused {
-					linkSC := ts.pausedSpanContext
-					if !linkSC.IsValid() {
-						linkSC = ts.span.SpanContext()
-					}
-
-					_, span := tracer.Start(ts.parentCtx, ts.spanName+" (continued)",
-						trace.WithTimestamp(ev.Time),
-						trace.WithAttributes(
-							semconv.TestCaseName(ev.Test),
-							semconv.TestSuiteName(ev.Package),
-							attribute.Bool(dagotel.UIPassthroughAttr, true),
-						),
-						trace.WithLinks(trace.Link{
-							SpanContext: linkSC,
-							Attributes: []attribute.KeyValue{
-								attribute.String(dagotel.LinkPurposeAttr, dagotel.LinkPurposeCause),
-							},
-						}),
-					)
-					ts.span = span
-					ts.spanStart = ev.Time
-					// Keep ts.ctx pointing at the original span so subtests remain
-					// parented under the user-facing test span, not the internal
-					// continuation span.
-					ts.paused = false
-
-					if cfg.registry != nil {
-						cfg.registry.Register(key, span.SpanContext())
-					}
+					endPauseSpan(ts, ev.Time)
 				}
 
 				if activeTests[ev.Package] == nil {
@@ -348,6 +340,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				delete(active, key)
 			}
 			if ts, ok := spans[key]; ok {
+				endPauseSpan(ts, ev.Time)
 				if ts.streams != nil {
 					ts.streams.Close()
 				}
@@ -363,6 +356,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				delete(active, key)
 			}
 			if ts, ok := spans[key]; ok {
+				endPauseSpan(ts, ev.Time)
 				if ts.streams != nil {
 					ts.streams.Close()
 				}
@@ -385,6 +379,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				delete(active, key)
 			}
 			if ts, ok := spans[key]; ok {
+				endPauseSpan(ts, ev.Time)
 				if ts.streams != nil {
 					ts.streams.Close()
 				}

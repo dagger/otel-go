@@ -96,6 +96,8 @@ const (
 	//
 	// This is the default if no explicit purpose is given.
 	LinkPurposeCause = "cause"
+	// The linked span was paused for the duration represented by the current span.
+	LinkPurposePaused = "paused"
 	// The linked span is the origin of the error bubbled up by the current span.
 	LinkPurposeErrorOrigin = "error_origin"
 
