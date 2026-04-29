@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	otel "github.com/dagger/otel-go"
+	dagotel "github.com/dagger/otel-go"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
@@ -34,12 +35,24 @@ type TestEvent struct {
 
 // testSpan tracks an in-flight span for a single test.
 type testSpan struct {
-	span        trace.Span
+	span      trace.Span
+	spanStart time.Time
+	// ctx is the original test span context used to parent subtests. For
+	// parallel tests, it intentionally remains the pre-PAUSE span even after
+	// ts.span is replaced by the internal continuation span.
 	ctx         context.Context
+	parentCtx   context.Context
 	testName    string
+	spanName    string
 	output      strings.Builder
-	streams     *otel.SpanStreams
+	streams     *dagotel.SpanStreams
 	bufferedOut strings.Builder // buffered output for non-verbose mode
+
+	// When a test calls t.Parallel(), go test emits a pause event while the test
+	// waits to be scheduled. End the current span at pause time and remember its
+	// context so the continuation span can link back to it when cont is emitted.
+	pausedSpanContext trace.SpanContext
+	paused            bool
 }
 
 // Option configures the behavior of Run.
@@ -76,7 +89,7 @@ func WithVerbose(v bool) Option {
 }
 
 // WithLoggerProvider routes test output to each test's span as OTel log
-// records via [otel.SpanStdio]. Without this, output is only captured
+// records via [dagotel.SpanStdio]. Without this, output is only captured
 // as span events.
 func WithLoggerProvider(lp *sdklog.LoggerProvider) Option {
 	return func(c *runConfig) { c.loggerProvider = lp }
@@ -88,6 +101,17 @@ func WithLoggerProvider(lp *sdklog.LoggerProvider) Option {
 // to the test binary for cross-process context propagation.
 func WithSpanContextRegistry(r *SpanContextRegistry) Option {
 	return func(c *runConfig) { c.registry = r }
+}
+
+func elapsedDuration(seconds float64) time.Duration {
+	return time.Duration(seconds * float64(time.Second))
+}
+
+func spanEndTime(ts *testSpan, ev TestEvent) time.Time {
+	if ts != nil && !ts.spanStart.IsZero() && ev.Elapsed > 0 {
+		return ts.spanStart.Add(elapsedDuration(ev.Elapsed))
+	}
+	return ev.Time
 }
 
 // Run reads a go test -json stream and emits OTel spans in real time.
@@ -149,14 +173,15 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					),
 				)
 				pkgSpans[ev.Package] = &testSpan{
-					span: pkgSpan,
-					ctx:  pkgCtx,
+					span:      pkgSpan,
+					spanStart: ev.Time,
+					ctx:       pkgCtx,
 				}
 			case "pass":
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Ok, "")
 					ps.span.SetAttributes(semconv.TestCaseResultStatusPass)
-					ps.span.End(trace.WithTimestamp(ev.Time))
+					ps.span.End(trace.WithTimestamp(spanEndTime(ps, ev)))
 					delete(pkgSpans, ev.Package)
 				}
 				delete(activeTests, ev.Package)
@@ -164,7 +189,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Error, "package had failures")
 					ps.span.SetAttributes(semconv.TestSuiteRunStatusFailure)
-					ps.span.End(trace.WithTimestamp(ev.Time))
+					ps.span.End(trace.WithTimestamp(spanEndTime(ps, ev)))
 					delete(pkgSpans, ev.Package)
 				}
 				delete(activeTests, ev.Package)
@@ -172,7 +197,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Ok, "skipped")
 					ps.span.SetAttributes(semconv.TestSuiteRunStatusSkipped)
-					ps.span.End(trace.WithTimestamp(ev.Time))
+					ps.span.End(trace.WithTimestamp(spanEndTime(ps, ev)))
 					delete(pkgSpans, ev.Package)
 				}
 				delete(activeTests, ev.Package)
@@ -216,17 +241,22 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				trace.WithAttributes(
 					semconv.TestCaseName(ev.Test),
 					semconv.TestSuiteName(ev.Package),
+					attribute.Bool(dagotel.UIBoundaryAttr, true),
 				),
 			)
 
 			ts := &testSpan{
-				span:     span,
-				ctx:      spanCtx,
-				testName: ev.Test,
+				span:      span,
+				spanStart: ev.Time,
+				ctx:       spanCtx,
+				parentCtx: parentCtx,
+				testName:  ev.Test,
+				spanName:  spanName,
 			}
 			if cfg.loggerProvider != nil {
-				spanCtx = otel.WithLoggerProvider(spanCtx, cfg.loggerProvider)
-				streams := otel.SpanStdio(spanCtx, instrumentationLibrary)
+				spanCtx = dagotel.WithLoggerProvider(spanCtx, cfg.loggerProvider)
+				ts.ctx = spanCtx
+				streams := dagotel.SpanStdio(spanCtx, instrumentationLibrary)
 				ts.streams = &streams
 			}
 			spans[key] = ts
@@ -243,9 +273,48 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			if active := activeTests[ev.Package]; active != nil {
 				delete(active, key)
 			}
+			if ts, ok := spans[key]; ok && !ts.paused {
+				// Keep ts.streams open so all test output remains associated with
+				// the original, user-facing span rather than the internal continuation.
+				ts.pausedSpanContext = ts.span.SpanContext()
+				ts.paused = true
+				ts.span.End(trace.WithTimestamp(ev.Time))
+			}
 
 		case "cont":
-			if _, ok := spans[key]; ok {
+			if ts, ok := spans[key]; ok {
+				if ts.paused {
+					linkSC := ts.pausedSpanContext
+					if !linkSC.IsValid() {
+						linkSC = ts.span.SpanContext()
+					}
+
+					_, span := tracer.Start(ts.parentCtx, ts.spanName+" (continued)",
+						trace.WithTimestamp(ev.Time),
+						trace.WithAttributes(
+							semconv.TestCaseName(ev.Test),
+							semconv.TestSuiteName(ev.Package),
+							attribute.Bool(dagotel.UIPassthroughAttr, true),
+						),
+						trace.WithLinks(trace.Link{
+							SpanContext: linkSC,
+							Attributes: []attribute.KeyValue{
+								attribute.String(dagotel.LinkPurposeAttr, dagotel.LinkPurposeCause),
+							},
+						}),
+					)
+					ts.span = span
+					ts.spanStart = ev.Time
+					// Keep ts.ctx pointing at the original span so subtests remain
+					// parented under the user-facing test span, not the internal
+					// continuation span.
+					ts.paused = false
+
+					if cfg.registry != nil {
+						cfg.registry.Register(key, span.SpanContext())
+					}
+				}
+
 				if activeTests[ev.Package] == nil {
 					activeTests[ev.Package] = map[string]struct{}{}
 				}
@@ -285,7 +354,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				// Non-verbose: discard buffered output for passing tests.
 				ts.span.SetStatus(codes.Ok, "test passed")
 				ts.span.SetAttributes(semconv.TestCaseResultStatusPass)
-				ts.span.End(trace.WithTimestamp(ev.Time))
+				ts.span.End(trace.WithTimestamp(spanEndTime(ts, ev)))
 				delete(spans, key)
 			}
 
@@ -307,7 +376,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				}
 				ts.span.SetStatus(codes.Error, desc)
 				ts.span.SetAttributes(semconv.TestSuiteRunStatusFailure)
-				ts.span.End(trace.WithTimestamp(ev.Time))
+				ts.span.End(trace.WithTimestamp(spanEndTime(ts, ev)))
 				delete(spans, key)
 			}
 
@@ -322,7 +391,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				// Non-verbose: discard buffered output for skipped tests.
 				ts.span.SetStatus(codes.Ok, "test skipped")
 				ts.span.SetAttributes(semconv.TestSuiteRunStatusSkipped)
-				ts.span.End(trace.WithTimestamp(ev.Time))
+				ts.span.End(trace.WithTimestamp(spanEndTime(ts, ev)))
 				delete(spans, key)
 			}
 		}
