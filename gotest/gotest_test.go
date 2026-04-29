@@ -2,17 +2,21 @@ package gotest_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	otel "github.com/dagger/otel-go"
 	"github.com/dagger/otel-go/gotest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
@@ -53,6 +57,29 @@ func findSpanByTestCaseName(spans []sdktrace.ReadOnlySpan, testName string) sdkt
 	return nil
 }
 
+func findSpansByTestCaseName(spans []sdktrace.ReadOnlySpan, testName string) []sdktrace.ReadOnlySpan {
+	var matches []sdktrace.ReadOnlySpan
+	for _, s := range spans {
+		if spanAttr(s, semconv.TestCaseNameKey).AsString() == testName {
+			matches = append(matches, s)
+		}
+	}
+	return matches
+}
+
+func findResultSpanByTestCaseName(spans []sdktrace.ReadOnlySpan, testName string) sdktrace.ReadOnlySpan {
+	matches := findSpansByTestCaseName(spans, testName)
+	for i := len(matches) - 1; i >= 0; i-- {
+		if matches[i].Status().Code == codes.Ok || matches[i].Status().Code == codes.Error {
+			return matches[i]
+		}
+	}
+	if len(matches) > 0 {
+		return matches[len(matches)-1]
+	}
+	return nil
+}
+
 func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 	names := make([]string, 0, len(spans))
 	for _, s := range spans {
@@ -61,7 +88,41 @@ func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 	return names
 }
 
-func runEvents(t *testing.T, events []gotest.TestEvent) []sdktrace.ReadOnlySpan {
+func otherSpan(spans []sdktrace.ReadOnlySpan, span sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
+	for _, s := range spans {
+		if s.SpanContext().SpanID() != span.SpanContext().SpanID() {
+			return s
+		}
+	}
+	return nil
+}
+
+type recordingLogExporter struct {
+	mu      sync.Mutex
+	records []sdklog.Record
+}
+
+func (e *recordingLogExporter) Export(_ context.Context, records []sdklog.Record) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, rec := range records {
+		e.records = append(e.records, rec.Clone())
+	}
+	return nil
+}
+
+func (e *recordingLogExporter) Shutdown(context.Context) error   { return nil }
+func (e *recordingLogExporter) ForceFlush(context.Context) error { return nil }
+
+func (e *recordingLogExporter) Records() []sdklog.Record {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	records := make([]sdklog.Record, len(e.records))
+	copy(records, e.records)
+	return records
+}
+
+func runEvents(t *testing.T, events []gotest.TestEvent, opts ...gotest.Option) []sdktrace.ReadOnlySpan {
 	t.Helper()
 
 	var buf bytes.Buffer
@@ -73,7 +134,7 @@ func runEvents(t *testing.T, events []gotest.TestEvent) []sdktrace.ReadOnlySpan 
 	spanRecorder := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
 
-	err := gotest.Run(t.Context(), &buf, tp)
+	err := gotest.Run(t.Context(), &buf, tp, opts...)
 	require.NoError(t, err)
 
 	return spanRecorder.Ended()
@@ -320,20 +381,139 @@ func TestInterleavedParallelSubtestsPreserveParents(t *testing.T) {
 		{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg"},
 	})
 
-	a := findSpanByTestCaseName(spans, "TestPar/A")
+	aCont := findResultSpanByTestCaseName(spans, "TestPar/A")
+	require.NotNil(t, aCont)
+	a := otherSpan(findSpansByTestCaseName(spans, "TestPar/A"), aCont)
 	require.NotNil(t, a)
-	b := findSpanByTestCaseName(spans, "TestPar/B")
+	bCont := findResultSpanByTestCaseName(spans, "TestPar/B")
+	require.NotNil(t, bCont)
+	b := otherSpan(findSpansByTestCaseName(spans, "TestPar/B"), bCont)
 	require.NotNil(t, b)
 
 	aChild := findSpanByTestCaseName(spans, "TestPar/A/child")
 	require.NotNil(t, aChild)
 	assert.Equal(t, "child", aChild.Name())
-	assert.Equal(t, a.SpanContext().SpanID(), aChild.Parent().SpanID())
+	assert.Equal(t, a.SpanContext().SpanID(), aChild.Parent().SpanID(),
+		"child of parallel test should be parented by original span, not continuation")
+	assert.NotEqual(t, aCont.SpanContext().SpanID(), aChild.Parent().SpanID())
 
 	bChild := findSpanByTestCaseName(spans, "TestPar/B/child")
 	require.NotNil(t, bChild)
 	assert.Equal(t, "child", bChild.Name())
-	assert.Equal(t, b.SpanContext().SpanID(), bChild.Parent().SpanID())
+	assert.Equal(t, b.SpanContext().SpanID(), bChild.Parent().SpanID(),
+		"child of parallel test should be parented by original span, not continuation")
+	assert.NotEqual(t, bCont.SpanContext().SpanID(), bChild.Parent().SpanID())
+}
+
+func TestElapsedDeterminesEndTime(t *testing.T) {
+	t.Parallel()
+
+	startAt := time.Now()
+	passEventAt := startAt.Add(10 * time.Second)
+	expectedEnd := startAt.Add(250 * time.Millisecond)
+
+	spans := runEvents(t, []gotest.TestEvent{
+		{Time: startAt, Action: "start", Package: "example.com/pkg"},
+		{Time: startAt, Action: "run", Package: "example.com/pkg", Test: "TestFast"},
+		{Time: passEventAt, Action: "pass", Package: "example.com/pkg", Test: "TestFast", Elapsed: 0.25},
+		{Time: passEventAt, Action: "pass", Package: "example.com/pkg", Elapsed: 10},
+	})
+
+	span := findSpanByTestCaseName(spans, "TestFast")
+	require.NotNil(t, span)
+	assert.True(t, span.StartTime().Equal(startAt))
+	assert.True(t, span.EndTime().Equal(expectedEnd),
+		"span should end at start+Elapsed, not the late pass event timestamp")
+}
+
+func TestPauseContSplitsSpanAndLinks(t *testing.T) {
+	t.Parallel()
+
+	startAt := time.Now()
+	runAt := startAt.Add(time.Second)
+	pauseAt := startAt.Add(2 * time.Second)
+	contAt := startAt.Add(10 * time.Second)
+	endAt := contAt.Add(time.Second)
+	passEventAt := startAt.Add(20 * time.Second)
+
+	spans := runEvents(t, []gotest.TestEvent{
+		{Time: startAt, Action: "start", Package: "example.com/pkg"},
+		{Time: runAt, Action: "run", Package: "example.com/pkg", Test: "TestParallel"},
+		{Time: pauseAt, Action: "pause", Package: "example.com/pkg", Test: "TestParallel"},
+		{Time: contAt, Action: "cont", Package: "example.com/pkg", Test: "TestParallel"},
+		{Time: passEventAt, Action: "pass", Package: "example.com/pkg", Test: "TestParallel", Elapsed: 1},
+		{Time: passEventAt, Action: "pass", Package: "example.com/pkg", Elapsed: 20},
+	})
+
+	pkg := findSpan(spans, "example.com/pkg")
+	require.NotNil(t, pkg)
+
+	testSpans := findSpansByTestCaseName(spans, "TestParallel")
+	require.Len(t, testSpans, 2)
+
+	cont := findResultSpanByTestCaseName(spans, "TestParallel")
+	require.NotNil(t, cont)
+	setup := otherSpan(testSpans, cont)
+	require.NotNil(t, setup)
+
+	assert.True(t, setup.StartTime().Equal(runAt))
+	assert.True(t, setup.EndTime().Equal(pauseAt))
+	assert.Equal(t, codes.Unset, setup.Status().Code)
+	assert.Equal(t, pkg.SpanContext().SpanID(), setup.Parent().SpanID())
+
+	assert.Equal(t, "TestParallel (continued)", cont.Name())
+	assert.True(t, cont.StartTime().Equal(contAt))
+	assert.True(t, cont.EndTime().Equal(endAt))
+	assert.Equal(t, codes.Ok, cont.Status().Code)
+	assert.Equal(t, pkg.SpanContext().SpanID(), cont.Parent().SpanID())
+	assert.True(t, spanAttr(cont, attribute.Key(otel.UIPassthroughAttr)).AsBool())
+
+	require.Len(t, cont.Links(), 1)
+	assert.Equal(t, setup.SpanContext().TraceID(), cont.Links()[0].SpanContext.TraceID())
+	assert.Equal(t, setup.SpanContext().SpanID(), cont.Links()[0].SpanContext.SpanID())
+}
+
+func TestPauseContLogsStayOnOriginalSpan(t *testing.T) {
+	t.Parallel()
+
+	logExporter := &recordingLogExporter{}
+	lp := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logExporter)))
+	t.Cleanup(func() {
+		require.NoError(t, lp.Shutdown(context.Background()))
+	})
+
+	now := time.Now()
+	spans := runEvents(t, []gotest.TestEvent{
+		{Time: now, Action: "start", Package: "example.com/pkg"},
+		{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestParallel"},
+		{Time: now, Action: "pause", Package: "example.com/pkg", Test: "TestParallel"},
+		{Time: now.Add(time.Second), Action: "cont", Package: "example.com/pkg", Test: "TestParallel"},
+		{Time: now.Add(time.Second), Action: "output", Package: "example.com/pkg", Test: "TestParallel", Output: "continued output\n"},
+		{Time: now.Add(2 * time.Second), Action: "pass", Package: "example.com/pkg", Test: "TestParallel"},
+		{Time: now.Add(2 * time.Second), Action: "pass", Package: "example.com/pkg"},
+	}, gotest.WithLoggerProvider(lp))
+	require.NoError(t, lp.ForceFlush(context.Background()))
+
+	testSpans := findSpansByTestCaseName(spans, "TestParallel")
+	require.Len(t, testSpans, 2)
+	cont := findResultSpanByTestCaseName(spans, "TestParallel")
+	require.NotNil(t, cont)
+	setup := otherSpan(testSpans, cont)
+	require.NotNil(t, setup)
+
+	var outputLog *sdklog.Record
+	for _, rec := range logExporter.Records() {
+		if rec.Body().AsString() == "continued output\n" {
+			rec := rec
+			outputLog = &rec
+			break
+		}
+	}
+	require.NotNil(t, outputLog, "expected continued output log record")
+	assert.Equal(t, setup.SpanContext().TraceID(), outputLog.TraceID())
+	assert.Equal(t, setup.SpanContext().SpanID(), outputLog.SpanID())
+	assert.NotEqual(t, cont.SpanContext().SpanID(), outputLog.SpanID(),
+		"continued output should stay routed to the original pre-PAUSE span")
 }
 
 func TestPackageSpan(t *testing.T) {
@@ -359,19 +539,42 @@ func TestParallelTests(t *testing.T) {
 	parent := findSpan(spans, "TestParallel")
 	require.NotNil(t, parent, "expected span for TestParallel")
 
-	a := findSpan(spans, "a")
-	require.NotNil(t, a, "expected span for parallel/a")
+	aSpans := findSpansByTestCaseName(spans, "TestParallel/a")
+	require.Len(t, aSpans, 2, "parallel/a should have a setup span and a continuation span")
+	a := findResultSpanByTestCaseName(spans, "TestParallel/a")
+	require.NotNil(t, a, "expected result span for parallel/a")
 
-	b := findSpan(spans, "b")
-	require.NotNil(t, b, "expected span for parallel/b")
+	bSpans := findSpansByTestCaseName(spans, "TestParallel/b")
+	require.Len(t, bSpans, 2, "parallel/b should have a setup span and a continuation span")
+	b := findResultSpanByTestCaseName(spans, "TestParallel/b")
+	require.NotNil(t, b, "expected result span for parallel/b")
 
-	// Both should be children of TestParallel
+	// Continuation spans should be internal children of TestParallel.
+	assert.Equal(t, "a (continued)", a.Name())
+	assert.Equal(t, "b (continued)", b.Name())
 	assert.Equal(t, parent.SpanContext().SpanID(), a.Parent().SpanID())
 	assert.Equal(t, parent.SpanContext().SpanID(), b.Parent().SpanID())
+	assert.True(t, spanAttr(a, attribute.Key(otel.UIPassthroughAttr)).AsBool())
+	assert.True(t, spanAttr(b, attribute.Key(otel.UIPassthroughAttr)).AsBool())
 
-	// Both should pass
+	// Both should pass.
 	assert.Equal(t, codes.Ok, a.Status().Code)
 	assert.Equal(t, codes.Ok, b.Status().Code)
+
+	// The continuation spans should link back to the setup spans that ended at PAUSE.
+	aSetup := otherSpan(aSpans, a)
+	require.NotNil(t, aSetup)
+	require.Len(t, a.Links(), 1)
+	assert.Equal(t, aSetup.SpanContext().SpanID(), a.Links()[0].SpanContext.SpanID())
+	assert.Equal(t, codes.Unset, aSetup.Status().Code)
+	assert.False(t, aSetup.EndTime().After(a.StartTime()))
+
+	bSetup := otherSpan(bSpans, b)
+	require.NotNil(t, bSetup)
+	require.Len(t, b.Links(), 1)
+	assert.Equal(t, bSetup.SpanContext().SpanID(), b.Links()[0].SpanContext.SpanID())
+	assert.Equal(t, codes.Unset, bSetup.Status().Code)
+	assert.False(t, bSetup.EndTime().After(b.StartTime()))
 }
 
 func TestSkippedPackage(t *testing.T) {
@@ -405,7 +608,8 @@ func TestSpanCount(t *testing.T) {
 	// 1 package +
 	// TestPass, TestFail, TestSkip,
 	// TestSub, TestSub/level1, TestSub/level1/level2,
-	// TestParallel, TestParallel/a, TestParallel/b
-	// = 10 total
-	assert.Len(t, spans, 10)
+	// TestParallel, TestParallel/a setup+continuation,
+	// TestParallel/b setup+continuation
+	// = 12 total
+	assert.Len(t, spans, 12)
 }
