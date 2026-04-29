@@ -113,8 +113,8 @@ func TestSubtestSpanName(t *testing.T) {
 func TestTimestamp(t *testing.T) {
 	spans := runFixture(t)
 
-	// The sample XML has timestamp="2026-04-06T22:30:03-04:00" on the suite.
-	expectedStart, err := time.Parse(time.RFC3339, "2026-04-06T22:30:03-04:00")
+	// The sample XML has timestamp="2026-04-29T19:19:07-04:00" on the suite.
+	expectedStart, err := time.Parse(time.RFC3339, "2026-04-29T19:19:07-04:00")
 	require.NoError(t, err)
 
 	suite := findSpan(spans, "github.com/dagger/otel-go/gotest/testdata/sample")
@@ -134,6 +134,23 @@ func TestTimestamp(t *testing.T) {
 func TestSpanCount(t *testing.T) {
 	spans := runFixture(t)
 
+	spanNames := make([]string, len(spans))
+	for i := range spans {
+		spanNames[i] = spans[i].Name()
+	}
 	// 1 suite + 9 tests = 10 spans
-	assert.Len(t, spans, 10)
+	assert.ElementsMatch(t, spanNames, []string{
+		"TestPass",
+		"TestFail",
+		"TestSkip",
+		"TestSub",
+		"TestSub/level1",
+		"TestSub/level1/level2",
+		"TestParallel0",
+		"TestParallel1",
+		"TestParallel2",
+		"TestParallel1/a",
+		"TestParallel1/b",
+		"github.com/dagger/otel-go/gotest/testdata/sample",
+	})
 }

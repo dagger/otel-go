@@ -289,19 +289,13 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 						linkSC = ts.span.SpanContext()
 					}
 
-					_, span := tracer.Start(ts.parentCtx, ts.spanName+" (continued)",
+					// A paused parallel test has been scheduled; count time from now
+					// until test completion, linking to the test span so it adds to its
+					// duration.
+					_, span := tracer.Start(ts.ctx, "continue",
 						trace.WithTimestamp(ev.Time),
-						trace.WithAttributes(
-							semconv.TestCaseName(ev.Test),
-							semconv.TestSuiteName(ev.Package),
-							attribute.Bool(dagotel.UIPassthroughAttr, true),
-						),
-						trace.WithLinks(trace.Link{
-							SpanContext: linkSC,
-							Attributes: []attribute.KeyValue{
-								attribute.String(dagotel.LinkPurposeAttr, dagotel.LinkPurposeCause),
-							},
-						}),
+						dagotel.Passthrough(),
+						trace.WithLinks(trace.Link{SpanContext: linkSC}),
 					)
 					ts.span = span
 					ts.spanStart = ev.Time
