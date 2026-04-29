@@ -67,6 +67,21 @@ func findSpansByTestCaseName(spans []sdktrace.ReadOnlySpan, testName string) []s
 	return matches
 }
 
+func findPauseSpanFor(spans []sdktrace.ReadOnlySpan, testSpan sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
+	for _, s := range spans {
+		if s.Name() != "paused" {
+			continue
+		}
+		for _, link := range s.Links() {
+			if link.SpanContext.TraceID() == testSpan.SpanContext().TraceID() &&
+				link.SpanContext.SpanID() == testSpan.SpanContext().SpanID() {
+				return s
+			}
+		}
+	}
+	return nil
+}
+
 func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 	names := make([]string, 0, len(spans))
 	for _, s := range spans {
@@ -427,11 +442,12 @@ func TestPauseContCreatesPausedSpanAndLinks(t *testing.T) {
 	assert.Equal(t, codes.Ok, testSpan.Status().Code)
 	assert.Equal(t, pkg.SpanContext().SpanID(), testSpan.Parent().SpanID())
 
-	pauseSpan := findSpan(spans, "TestParallel (paused)")
+	pauseSpan := findPauseSpanFor(spans, testSpan)
 	require.NotNil(t, pauseSpan)
+	assert.Equal(t, "paused", pauseSpan.Name())
 	assert.True(t, pauseSpan.StartTime().Equal(pauseAt))
 	assert.True(t, pauseSpan.EndTime().Equal(contAt))
-	assert.Equal(t, pkg.SpanContext().SpanID(), pauseSpan.Parent().SpanID())
+	assert.Equal(t, testSpan.SpanContext().SpanID(), pauseSpan.Parent().SpanID())
 	assert.True(t, spanAttr(pauseSpan, attribute.Key(otel.UIInternalAttr)).AsBool())
 	assert.True(t, spanAttr(pauseSpan, attribute.Key(otel.UIPassthroughAttr)).AsBool())
 
@@ -466,7 +482,7 @@ func TestPauseContLogsStayOnOriginalSpan(t *testing.T) {
 	testSpans := findSpansByTestCaseName(spans, "TestParallel")
 	require.Len(t, testSpans, 1)
 	testSpan := testSpans[0]
-	pauseSpan := findSpan(spans, "TestParallel (paused)")
+	pauseSpan := findPauseSpanFor(spans, testSpan)
 	require.NotNil(t, pauseSpan)
 
 	var outputLog *sdklog.Record
@@ -504,45 +520,59 @@ func TestPackageSpan(t *testing.T) {
 func TestParallelTests(t *testing.T) {
 	spans := runFixture(t)
 
-	parent := findSpan(spans, "TestParallel")
-	require.NotNil(t, parent, "expected span for TestParallel")
+	pkg := findSpan(spans, "github.com/dagger/otel-go/gotest/testdata/sample")
+	require.NotNil(t, pkg, "expected package span")
 
-	aSpans := findSpansByTestCaseName(spans, "TestParallel/a")
+	p0 := findSpanByTestCaseName(spans, "TestParallel0")
+	require.NotNil(t, p0, "expected span for TestParallel0")
+	p1 := findSpanByTestCaseName(spans, "TestParallel1")
+	require.NotNil(t, p1, "expected span for TestParallel1")
+	p2 := findSpanByTestCaseName(spans, "TestParallel2")
+	require.NotNil(t, p2, "expected span for TestParallel2")
+
+	for _, span := range []sdktrace.ReadOnlySpan{p0, p1, p2} {
+		assert.Equal(t, pkg.SpanContext().SpanID(), span.Parent().SpanID())
+		assert.Equal(t, codes.Ok, span.Status().Code)
+	}
+
+	aSpans := findSpansByTestCaseName(spans, "TestParallel1/a")
 	require.Len(t, aSpans, 1, "parallel/a should have one test span")
 	a := aSpans[0]
 
-	bSpans := findSpansByTestCaseName(spans, "TestParallel/b")
+	bSpans := findSpansByTestCaseName(spans, "TestParallel1/b")
 	require.Len(t, bSpans, 1, "parallel/b should have one test span")
 	b := bSpans[0]
 
-	// Both should be children of TestParallel.
-	assert.Equal(t, parent.SpanContext().SpanID(), a.Parent().SpanID())
-	assert.Equal(t, parent.SpanContext().SpanID(), b.Parent().SpanID())
+	// Both subtests should be children of TestParallel1.
+	assert.Equal(t, p1.SpanContext().SpanID(), a.Parent().SpanID())
+	assert.Equal(t, p1.SpanContext().SpanID(), b.Parent().SpanID())
 
 	// Both should pass.
 	assert.Equal(t, codes.Ok, a.Status().Code)
 	assert.Equal(t, codes.Ok, b.Status().Code)
 
 	// Separate pause spans represent the time spent waiting for t.Parallel.
-	aPause := findSpan(spans, "a (paused)")
-	require.NotNil(t, aPause)
-	assert.True(t, spanAttr(aPause, attribute.Key(otel.UIInternalAttr)).AsBool())
-	assert.True(t, spanAttr(aPause, attribute.Key(otel.UIPassthroughAttr)).AsBool())
-	require.Len(t, aPause.Links(), 1)
-	assert.Equal(t, a.SpanContext().SpanID(), aPause.Links()[0].SpanContext.SpanID())
-	assert.Contains(t, aPause.Links()[0].Attributes,
-		attribute.String(otel.LinkPurposeAttr, otel.LinkPurposePaused))
-	assert.False(t, aPause.EndTime().Before(aPause.StartTime()))
+	assertPauseSpan := func(testSpan sdktrace.ReadOnlySpan) {
+		t.Helper()
 
-	bPause := findSpan(spans, "b (paused)")
-	require.NotNil(t, bPause)
-	assert.True(t, spanAttr(bPause, attribute.Key(otel.UIInternalAttr)).AsBool())
-	assert.True(t, spanAttr(bPause, attribute.Key(otel.UIPassthroughAttr)).AsBool())
-	require.Len(t, bPause.Links(), 1)
-	assert.Equal(t, b.SpanContext().SpanID(), bPause.Links()[0].SpanContext.SpanID())
-	assert.Contains(t, bPause.Links()[0].Attributes,
-		attribute.String(otel.LinkPurposeAttr, otel.LinkPurposePaused))
-	assert.False(t, bPause.EndTime().Before(bPause.StartTime()))
+		pauseSpan := findPauseSpanFor(spans, testSpan)
+		require.NotNil(t, pauseSpan)
+		assert.Equal(t, "paused", pauseSpan.Name())
+		assert.Equal(t, testSpan.SpanContext().SpanID(), pauseSpan.Parent().SpanID())
+		assert.True(t, spanAttr(pauseSpan, attribute.Key(otel.UIInternalAttr)).AsBool())
+		assert.True(t, spanAttr(pauseSpan, attribute.Key(otel.UIPassthroughAttr)).AsBool())
+		require.Len(t, pauseSpan.Links(), 1)
+		assert.Equal(t, testSpan.SpanContext().SpanID(), pauseSpan.Links()[0].SpanContext.SpanID())
+		assert.Contains(t, pauseSpan.Links()[0].Attributes,
+			attribute.String(otel.LinkPurposeAttr, otel.LinkPurposePaused))
+		assert.False(t, pauseSpan.EndTime().Before(pauseSpan.StartTime()))
+	}
+
+	assertPauseSpan(p0)
+	assertPauseSpan(p1)
+	assertPauseSpan(p2)
+	assertPauseSpan(a)
+	assertPauseSpan(b)
 }
 
 func TestSkippedPackage(t *testing.T) {
@@ -576,8 +606,9 @@ func TestSpanCount(t *testing.T) {
 	// 1 package +
 	// TestPass, TestFail, TestSkip,
 	// TestSub, TestSub/level1, TestSub/level1/level2,
-	// TestParallel, TestParallel/a, TestParallel/a paused,
-	// TestParallel/b, TestParallel/b paused
-	// = 12 total
-	assert.Len(t, spans, 12)
+	// TestParallel0/1/2 and their paused spans,
+	// TestParallel1/a, TestParallel1/a paused,
+	// TestParallel1/b, TestParallel1/b paused
+	// = 17 total
+	assert.Len(t, spans, 17)
 }

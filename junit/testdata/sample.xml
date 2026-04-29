@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuites tests="9" failures="1" skipped="1">
-	<testsuite name="github.com/dagger/otel-go/gotest/testdata/sample" tests="9" failures="1" errors="0" id="0" hostname="fdesk" skipped="1" time="0.047" timestamp="2026-04-06T22:30:03-04:00">
+<testsuites tests="11" failures="1" skipped="1">
+	<testsuite name="github.com/dagger/otel-go/gotest/testdata/sample" tests="11" failures="1" errors="0" id="0" hostname="fdesk" skipped="1" time="2.528" timestamp="2026-04-29T17:37:46-04:00">
 		<testcase name="TestPass" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.010">
 			<system-out><![CDATA[    sample_test.go:10: this test passes]]></system-out>
 		</testcase>
@@ -17,11 +17,13 @@
 		<testcase name="TestSub/level1/level2" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.010">
 			<system-out><![CDATA[    sample_test.go:27: in level2]]></system-out>
 		</testcase>
-		<testcase name="TestParallel" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.000"></testcase>
-		<testcase name="TestParallel/a" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.020"></testcase>
-		<testcase name="TestParallel/b" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.020">
-			<system-out><![CDATA[    sample_test.go:36: parallel a done
-    sample_test.go:41: parallel b done]]></system-out>
+		<testcase name="TestParallel0" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="2.000"></testcase>
+		<testcase name="TestParallel1" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="0.500"></testcase>
+		<testcase name="TestParallel2" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="2.000"></testcase>
+		<testcase name="TestParallel1/a" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="1.000"></testcase>
+		<testcase name="TestParallel1/b" classname="github.com/dagger/otel-go/gotest/testdata/sample" time="2.000">
+			<system-out><![CDATA[    sample_test.go:43: parallel a done]]></system-out>
 		</testcase>
+		<system-out><![CDATA[    sample_test.go:48: parallel b done]]></system-out>
 	</testsuite>
 </testsuites>

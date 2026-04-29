@@ -283,7 +283,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				delete(active, key)
 			}
 			if ts, ok := spans[key]; ok && !ts.paused {
-				_, pauseSpan := tracer.Start(ts.parentCtx, ts.spanName+" (paused)",
+				_, pauseSpan := tracer.Start(ts.ctx, "paused",
 					trace.WithTimestamp(ev.Time),
 					trace.WithAttributes(
 						semconv.TestSuiteName(ev.Package),

@@ -29,15 +29,27 @@ func TestSub(t *testing.T) {
 	})
 }
 
-func TestParallel(t *testing.T) {
+func TestParallel0(t *testing.T) {
+	t.Parallel()
+	time.Sleep(2 * time.Second)
+}
+
+func TestParallel1(t *testing.T) {
+	t.Parallel()
+	time.Sleep(500 * time.Millisecond)
 	t.Run("a", func(t *testing.T) {
 		t.Parallel()
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(1 * time.Second)
 		t.Log("parallel a done")
 	})
 	t.Run("b", func(t *testing.T) {
 		t.Parallel()
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(2 * time.Second)
 		t.Log("parallel b done")
 	})
+}
+
+func TestParallel2(t *testing.T) {
+	t.Parallel()
+	time.Sleep(2 * time.Second)
 }
