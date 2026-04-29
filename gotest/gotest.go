@@ -105,13 +105,6 @@ func elapsedDuration(seconds float64) time.Duration {
 	return time.Duration(seconds * float64(time.Second))
 }
 
-func spanEndTime(ts *testSpan, ev TestEvent) time.Time {
-	if ts != nil && !ts.spanStart.IsZero() && ev.Elapsed > 0 {
-		return ts.spanStart.Add(elapsedDuration(ev.Elapsed))
-	}
-	return ev.Time
-}
-
 func endPauseSpan(ts *testSpan, at time.Time) {
 	if ts == nil {
 		return
@@ -190,7 +183,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Ok, "")
 					ps.span.SetAttributes(semconv.TestCaseResultStatusPass)
-					ps.span.End(trace.WithTimestamp(spanEndTime(ps, ev)))
+					ps.span.End(trace.WithTimestamp(ev.Time))
 					delete(pkgSpans, ev.Package)
 				}
 				delete(activeTests, ev.Package)
@@ -198,7 +191,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Error, "package had failures")
 					ps.span.SetAttributes(semconv.TestSuiteRunStatusFailure)
-					ps.span.End(trace.WithTimestamp(spanEndTime(ps, ev)))
+					ps.span.End(trace.WithTimestamp(ev.Time))
 					delete(pkgSpans, ev.Package)
 				}
 				delete(activeTests, ev.Package)
@@ -206,7 +199,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Ok, "skipped")
 					ps.span.SetAttributes(semconv.TestSuiteRunStatusSkipped)
-					ps.span.End(trace.WithTimestamp(spanEndTime(ps, ev)))
+					ps.span.End(trace.WithTimestamp(ev.Time))
 					delete(pkgSpans, ev.Package)
 				}
 				delete(activeTests, ev.Package)
@@ -347,7 +340,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				// Non-verbose: discard buffered output for passing tests.
 				ts.span.SetStatus(codes.Ok, "test passed")
 				ts.span.SetAttributes(semconv.TestCaseResultStatusPass)
-				ts.span.End(trace.WithTimestamp(spanEndTime(ts, ev)))
+				ts.span.End(trace.WithTimestamp(ev.Time))
 				delete(spans, key)
 			}
 
@@ -370,7 +363,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				}
 				ts.span.SetStatus(codes.Error, desc)
 				ts.span.SetAttributes(semconv.TestSuiteRunStatusFailure)
-				ts.span.End(trace.WithTimestamp(spanEndTime(ts, ev)))
+				ts.span.End(trace.WithTimestamp(ev.Time))
 				delete(spans, key)
 			}
 
@@ -386,7 +379,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				// Non-verbose: discard buffered output for skipped tests.
 				ts.span.SetStatus(codes.Ok, "test skipped")
 				ts.span.SetAttributes(semconv.TestSuiteRunStatusSkipped)
-				ts.span.End(trace.WithTimestamp(spanEndTime(ts, ev)))
+				ts.span.End(trace.WithTimestamp(ev.Time))
 				delete(spans, key)
 			}
 		}
