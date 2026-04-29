@@ -241,6 +241,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				trace.WithAttributes(
 					semconv.TestCaseName(ev.Test),
 					semconv.TestSuiteName(ev.Package),
+					attribute.Bool(dagotel.UIBoundaryAttr, true),
 				),
 			)
 
