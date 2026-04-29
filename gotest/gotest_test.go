@@ -80,6 +80,21 @@ func findResultSpanByTestCaseName(spans []sdktrace.ReadOnlySpan, testName string
 	return nil
 }
 
+func findContinuationSpanFor(spans []sdktrace.ReadOnlySpan, testSpan sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
+	for _, s := range spans {
+		if s.Name() != "continue" {
+			continue
+		}
+		for _, link := range s.Links() {
+			if link.SpanContext.TraceID() == testSpan.SpanContext().TraceID() &&
+				link.SpanContext.SpanID() == testSpan.SpanContext().SpanID() {
+				return s
+			}
+		}
+	}
+	return nil
+}
+
 func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 	names := make([]string, 0, len(spans))
 	for _, s := range spans {
@@ -381,14 +396,14 @@ func TestInterleavedParallelSubtestsPreserveParents(t *testing.T) {
 		{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg"},
 	})
 
-	aCont := findResultSpanByTestCaseName(spans, "TestPar/A")
-	require.NotNil(t, aCont)
-	a := otherSpan(findSpansByTestCaseName(spans, "TestPar/A"), aCont)
+	a := findSpanByTestCaseName(spans, "TestPar/A")
 	require.NotNil(t, a)
-	bCont := findResultSpanByTestCaseName(spans, "TestPar/B")
-	require.NotNil(t, bCont)
-	b := otherSpan(findSpansByTestCaseName(spans, "TestPar/B"), bCont)
+	aCont := findContinuationSpanFor(spans, a)
+	require.NotNil(t, aCont)
+	b := findSpanByTestCaseName(spans, "TestPar/B")
 	require.NotNil(t, b)
+	bCont := findContinuationSpanFor(spans, b)
+	require.NotNil(t, bCont)
 
 	aChild := findSpanByTestCaseName(spans, "TestPar/A/child")
 	require.NotNil(t, aChild)
@@ -449,23 +464,22 @@ func TestPauseContSplitsSpanAndLinks(t *testing.T) {
 	require.NotNil(t, pkg)
 
 	testSpans := findSpansByTestCaseName(spans, "TestParallel")
-	require.Len(t, testSpans, 2)
-
-	cont := findResultSpanByTestCaseName(spans, "TestParallel")
+	require.Len(t, testSpans, 1)
+	setup := testSpans[0]
+	cont := findContinuationSpanFor(spans, setup)
 	require.NotNil(t, cont)
-	setup := otherSpan(testSpans, cont)
-	require.NotNil(t, setup)
 
 	assert.True(t, setup.StartTime().Equal(runAt))
 	assert.True(t, setup.EndTime().Equal(pauseAt))
 	assert.Equal(t, codes.Unset, setup.Status().Code)
 	assert.Equal(t, pkg.SpanContext().SpanID(), setup.Parent().SpanID())
 
-	assert.Equal(t, "TestParallel (continued)", cont.Name())
+	assert.Equal(t, "continue", cont.Name())
+	assert.Equal(t, "", spanAttr(cont, semconv.TestCaseNameKey).AsString())
 	assert.True(t, cont.StartTime().Equal(contAt))
 	assert.True(t, cont.EndTime().Equal(endAt))
 	assert.Equal(t, codes.Ok, cont.Status().Code)
-	assert.Equal(t, pkg.SpanContext().SpanID(), cont.Parent().SpanID())
+	assert.Equal(t, setup.SpanContext().SpanID(), cont.Parent().SpanID())
 	assert.True(t, spanAttr(cont, attribute.Key(otel.UIPassthroughAttr)).AsBool())
 
 	require.Len(t, cont.Links(), 1)
@@ -495,11 +509,10 @@ func TestPauseContLogsStayOnOriginalSpan(t *testing.T) {
 	require.NoError(t, lp.ForceFlush(context.Background()))
 
 	testSpans := findSpansByTestCaseName(spans, "TestParallel")
-	require.Len(t, testSpans, 2)
-	cont := findResultSpanByTestCaseName(spans, "TestParallel")
+	require.Len(t, testSpans, 1)
+	setup := testSpans[0]
+	cont := findContinuationSpanFor(spans, setup)
 	require.NotNil(t, cont)
-	setup := otherSpan(testSpans, cont)
-	require.NotNil(t, setup)
 
 	var outputLog *sdklog.Record
 	for _, rec := range logExporter.Records() {
@@ -536,45 +549,49 @@ func TestPackageSpan(t *testing.T) {
 func TestParallelTests(t *testing.T) {
 	spans := runFixture(t)
 
-	parent := findSpan(spans, "TestParallel")
-	require.NotNil(t, parent, "expected span for TestParallel")
+	parent := findSpan(spans, "TestParallel1")
+	require.NotNil(t, parent, "expected span for TestParallel1")
 
-	aSpans := findSpansByTestCaseName(spans, "TestParallel/a")
-	require.Len(t, aSpans, 2, "parallel/a should have a setup span and a continuation span")
-	a := findResultSpanByTestCaseName(spans, "TestParallel/a")
-	require.NotNil(t, a, "expected result span for parallel/a")
+	aSpans := findSpansByTestCaseName(spans, "TestParallel1/a")
+	require.Len(t, aSpans, 1, "parallel/a should have a single test span")
+	a := aSpans[0]
+	aCont := findContinuationSpanFor(spans, a)
+	require.NotNil(t, aCont, "expected continuation span for parallel/a")
 
-	bSpans := findSpansByTestCaseName(spans, "TestParallel/b")
-	require.Len(t, bSpans, 2, "parallel/b should have a setup span and a continuation span")
-	b := findResultSpanByTestCaseName(spans, "TestParallel/b")
-	require.NotNil(t, b, "expected result span for parallel/b")
+	bSpans := findSpansByTestCaseName(spans, "TestParallel1/b")
+	require.Len(t, bSpans, 1, "parallel/b should have a single test span")
+	b := bSpans[0]
+	bCont := findContinuationSpanFor(spans, b)
+	require.NotNil(t, bCont, "expected continuation span for parallel/b")
 
-	// Continuation spans should be internal children of TestParallel.
-	assert.Equal(t, "a (continued)", a.Name())
-	assert.Equal(t, "b (continued)", b.Name())
+	// Test spans should be children of TestParallel1.
 	assert.Equal(t, parent.SpanContext().SpanID(), a.Parent().SpanID())
 	assert.Equal(t, parent.SpanContext().SpanID(), b.Parent().SpanID())
-	assert.True(t, spanAttr(a, attribute.Key(otel.UIPassthroughAttr)).AsBool())
-	assert.True(t, spanAttr(b, attribute.Key(otel.UIPassthroughAttr)).AsBool())
+
+	// Continuation spans should be passthrough children of their test spans.
+	assert.Equal(t, "continue", aCont.Name())
+	assert.Equal(t, "continue", bCont.Name())
+	assert.Equal(t, "", spanAttr(aCont, semconv.TestCaseNameKey).AsString())
+	assert.Equal(t, "", spanAttr(bCont, semconv.TestCaseNameKey).AsString())
+	assert.Equal(t, a.SpanContext().SpanID(), aCont.Parent().SpanID())
+	assert.Equal(t, b.SpanContext().SpanID(), bCont.Parent().SpanID())
+	assert.True(t, spanAttr(aCont, attribute.Key(otel.UIPassthroughAttr)).AsBool())
+	assert.True(t, spanAttr(bCont, attribute.Key(otel.UIPassthroughAttr)).AsBool())
 
 	// Both should pass.
-	assert.Equal(t, codes.Ok, a.Status().Code)
-	assert.Equal(t, codes.Ok, b.Status().Code)
+	assert.Equal(t, codes.Ok, aCont.Status().Code)
+	assert.Equal(t, codes.Ok, bCont.Status().Code)
 
 	// The continuation spans should link back to the setup spans that ended at PAUSE.
-	aSetup := otherSpan(aSpans, a)
-	require.NotNil(t, aSetup)
-	require.Len(t, a.Links(), 1)
-	assert.Equal(t, aSetup.SpanContext().SpanID(), a.Links()[0].SpanContext.SpanID())
-	assert.Equal(t, codes.Unset, aSetup.Status().Code)
-	assert.False(t, aSetup.EndTime().After(a.StartTime()))
+	require.Len(t, aCont.Links(), 1)
+	assert.Equal(t, a.SpanContext().SpanID(), aCont.Links()[0].SpanContext.SpanID())
+	assert.Equal(t, codes.Unset, a.Status().Code)
+	assert.False(t, a.EndTime().After(aCont.StartTime()))
 
-	bSetup := otherSpan(bSpans, b)
-	require.NotNil(t, bSetup)
-	require.Len(t, b.Links(), 1)
-	assert.Equal(t, bSetup.SpanContext().SpanID(), b.Links()[0].SpanContext.SpanID())
-	assert.Equal(t, codes.Unset, bSetup.Status().Code)
-	assert.False(t, bSetup.EndTime().After(b.StartTime()))
+	require.Len(t, bCont.Links(), 1)
+	assert.Equal(t, b.SpanContext().SpanID(), bCont.Links()[0].SpanContext.SpanID())
+	assert.Equal(t, codes.Unset, b.Status().Code)
+	assert.False(t, b.EndTime().After(bCont.StartTime()))
 }
 
 func TestSkippedPackage(t *testing.T) {
@@ -605,11 +622,28 @@ func TestSkippedPackage(t *testing.T) {
 func TestSpanCount(t *testing.T) {
 	spans := runFixture(t)
 
-	// 1 package +
-	// TestPass, TestFail, TestSkip,
-	// TestSub, TestSub/level1, TestSub/level1/level2,
-	// TestParallel, TestParallel/a setup+continuation,
-	// TestParallel/b setup+continuation
-	// = 12 total
-	assert.Len(t, spans, 12)
+	spanNames := make([]string, len(spans))
+	for i := range spans {
+		spanNames[i] = spans[i].Name()
+	}
+	// 1 suite + 9 tests = 10 spans
+	assert.ElementsMatch(t, spanNames, []string{
+		"TestPass",
+		"TestFail",
+		"TestSkip",
+		"level2",
+		"level1",
+		"TestSub",
+		"TestParallel0",
+		"TestParallel1",
+		"TestParallel2",
+		"a",
+		"b",
+		"continue",
+		"continue",
+		"continue",
+		"continue",
+		"continue",
+		"github.com/dagger/otel-go/gotest/testdata/sample",
+	})
 }
