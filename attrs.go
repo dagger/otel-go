@@ -114,6 +114,9 @@ const (
 	// Indicates that this span was interrupted.
 	CanceledAttr = "dagger.io/dag.canceled"
 
+	// Indicates that this span has pending state/work.
+	PendingAttr = "dagger.io/dag.pending"
+
 	// The IDs of effects which will be correlated to this span.
 	//
 	// This is typically a list of LLB operation digests, but can be any string.
