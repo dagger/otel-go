@@ -319,9 +319,9 @@ func TestSpanContextWithMiddleware(t *testing.T) {
 		"downstream should be parented under gotest span")
 }
 
-// TestErrorMessageCleaning verifies that verbose testify-style error
-// messages in test output are cleaned up for the span status description.
-func TestErrorMessageCleaning(t *testing.T) {
+// TestFailureStatusIgnoresTestOutput verifies that verbose testify-style
+// failure output does not become the span status description.
+func TestFailureStatusIgnoresTestOutput(t *testing.T) {
 	spanRecorder := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
 
@@ -361,14 +361,13 @@ func TestErrorMessageCleaning(t *testing.T) {
 	require.NotNil(t, span)
 
 	assert.Equal(t, codes.Error, span.Status().Code)
-	assert.Equal(t, "Expected nil, but got error", span.Status().Description,
-		"span status should contain only the cleaned error, not the full trace")
+	assert.Equal(t, "test failed", span.Status().Description,
+		"span status should not contain dynamic test output")
 }
 
-// TestErrorMessageCleaningWithNoise verifies that when testify errors are
-// mixed with regular log output, only the error content appears in the
-// span status.
-func TestErrorMessageCleaningWithNoise(t *testing.T) {
+// TestFailureStatusIgnoresNoisyTestOutput verifies that noisy test output does
+// not become the span status description.
+func TestFailureStatusIgnoresNoisyTestOutput(t *testing.T) {
 	spanRecorder := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
 
@@ -409,8 +408,8 @@ func TestErrorMessageCleaningWithNoise(t *testing.T) {
 	require.NotNil(t, span)
 
 	assert.Equal(t, codes.Error, span.Status().Code)
-	assert.Equal(t, "Condition never satisfied", span.Status().Description,
-		"span status should contain only the cleaned error, not log noise")
+	assert.Equal(t, "test failed", span.Status().Description,
+		"span status should not contain dynamic test output")
 }
 
 // --- helpers ---
