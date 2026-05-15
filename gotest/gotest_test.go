@@ -218,7 +218,7 @@ func TestFailingTest(t *testing.T) {
 	require.NotNil(t, span, "expected span for TestFail")
 
 	assert.Equal(t, codes.Error, span.Status().Code)
-	assert.Contains(t, span.Status().Description, "something went wrong")
+	assert.Equal(t, "test failed", span.Status().Description)
 
 	// result status
 	assert.Contains(t, span.Attributes(), semconv.TestSuiteRunStatusFailure)
