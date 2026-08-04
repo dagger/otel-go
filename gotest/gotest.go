@@ -134,6 +134,12 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 	// pkgSpans tracks a parent span per package.
 	pkgSpans := map[string]*testSpan{}
 
+	// pkgRuns counts the test "run" events seen per package. When go test is
+	// invoked with a -run pattern that matches nothing, the package still
+	// reports "pass" (printing "[no tests to run]"), which would otherwise be
+	// reported as a passing suite that ran nothing.
+	pkgRuns := map[string]int{}
+
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		var ev TestEvent
@@ -177,12 +183,18 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				}
 			case "pass":
 				if ps, ok := pkgSpans[ev.Package]; ok {
-					ps.span.SetStatus(codes.Ok, "")
-					ps.span.SetAttributes(semconv.TestCaseResultStatusPass)
+					if pkgRuns[ev.Package] == 0 {
+						ps.span.SetStatus(codes.Ok, "no tests to run")
+						ps.span.SetAttributes(semconv.TestSuiteRunStatusSkipped)
+					} else {
+						ps.span.SetStatus(codes.Ok, "")
+						ps.span.SetAttributes(semconv.TestSuiteRunStatusSuccess)
+					}
 					ps.span.End(trace.WithTimestamp(spanEndTime(ps, ev)))
 					delete(pkgSpans, ev.Package)
 				}
 				delete(activeTests, ev.Package)
+				delete(pkgRuns, ev.Package)
 			case "fail":
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Error, "package had failures")
@@ -191,6 +203,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					delete(pkgSpans, ev.Package)
 				}
 				delete(activeTests, ev.Package)
+				delete(pkgRuns, ev.Package)
 			case "skip":
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Ok, "skipped")
@@ -199,6 +212,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					delete(pkgSpans, ev.Package)
 				}
 				delete(activeTests, ev.Package)
+				delete(pkgRuns, ev.Package)
 			}
 			continue
 		}
@@ -262,6 +276,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				activeTests[ev.Package] = map[string]struct{}{}
 			}
 			activeTests[ev.Package][key] = struct{}{}
+			pkgRuns[ev.Package]++
 
 			if cfg.registry != nil {
 				cfg.registry.Register(key, span.SpanContext())
