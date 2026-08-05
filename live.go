@@ -27,5 +27,5 @@ func (p *LiveSpanProcessor) OnStart(ctx context.Context, span sdktrace.ReadWrite
 	// filtered out by FilterLiveSpansExporter. Otherwise the span can complete
 	// before being exported, resulting in two completed spans being sent, which
 	// will confuse traditional OpenTelemetry services.
-	p.SpanProcessor.OnEnd(SnapshotSpan(span))
+	p.OnEnd(SnapshotSpan(span))
 }

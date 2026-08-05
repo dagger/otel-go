@@ -1,8 +1,6 @@
 // Package junit converts JUnit XML test suites into OTel spans.
 package junit
 
-//go:generate sh -c "go-junit-report -parser gojson < ../gotest/testdata/sample.jsonl > testdata/sample.xml"
-
 import (
 	"context"
 	"io"
@@ -143,12 +141,12 @@ func emitTest(ctx context.Context, tracer trace.Tracer, cfg *runConfig, suiteNam
 		logCtx := otel.WithLoggerProvider(spanCtx, cfg.loggerProvider)
 		streams := otel.SpanStdio(logCtx, instrumentationLibrary)
 		if test.SystemOut != "" {
-			io.WriteString(streams.Stdout, test.SystemOut)
+			_, _ = io.WriteString(streams.Stdout, test.SystemOut)
 		}
 		if test.SystemErr != "" {
-			io.WriteString(streams.Stderr, test.SystemErr)
+			_, _ = io.WriteString(streams.Stderr, test.SystemErr)
 		}
-		streams.Close()
+		_ = streams.Close()
 	}
 
 	switch test.Status {

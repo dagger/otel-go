@@ -25,6 +25,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// mustEncode writes a test event to the JSON stream, failing the test on error.
+func mustEncode(t *testing.T, enc *json.Encoder, ev gotest.TestEvent) {
+	t.Helper()
+	require.NoError(t, enc.Encode(ev))
+}
+
 // testBinaryPackage returns the import path of the package under test,
 // matching what oteltestctx.detectTestPackage() returns at runtime.
 func testBinaryPackage() string {
@@ -52,7 +58,7 @@ func TestSpanContextPropagation(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "span.sock")
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	// Start a socket server mirroring otelgotest's serveSpanContexts.
 	go serveSpanContexts(listener, registry)
@@ -69,8 +75,8 @@ func TestSpanContextPropagation(t *testing.T) {
 
 	now := time.Now()
 	enc := json.NewEncoder(pw)
-	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
-	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestFoo"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestFoo"})
 
 	// Simulate what oteltest does: connect to the socket and retrieve
 	// the span context for TestFoo. The socket protocol uses
@@ -84,9 +90,9 @@ func TestSpanContextPropagation(t *testing.T) {
 	childSpan.End()
 
 	// Finish the test.
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg", Test: "TestFoo"})
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg"})
-	pw.Close()
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg", Test: "TestFoo"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg"})
+	require.NoError(t, pw.Close())
 
 	require.NoError(t, <-done)
 
@@ -117,7 +123,7 @@ func TestSpanContextPropagationSubtest(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "span.sock")
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	go serveSpanContexts(listener, registry)
 
@@ -132,9 +138,9 @@ func TestSpanContextPropagationSubtest(t *testing.T) {
 
 	now := time.Now()
 	enc := json.NewEncoder(pw)
-	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
-	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestParent"})
-	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestParent/sub"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestParent"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestParent/sub"})
 
 	// Retrieve span contexts for both the parent and subtest.
 	// Socket protocol uses package-qualified names.
@@ -150,10 +156,10 @@ func TestSpanContextPropagationSubtest(t *testing.T) {
 	_, subChild := tp.Tracer("test").Start(subCtx, "sub-op")
 	subChild.End()
 
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg", Test: "TestParent/sub"})
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg", Test: "TestParent"})
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg"})
-	pw.Close()
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg", Test: "TestParent/sub"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg", Test: "TestParent"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg"})
+	require.NoError(t, pw.Close())
 
 	require.NoError(t, <-done)
 
@@ -198,7 +204,7 @@ func TestSpanContextPropagationWaitFor(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "span.sock")
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	go serveSpanContexts(listener, registry)
 
@@ -213,7 +219,7 @@ func TestSpanContextPropagationWaitFor(t *testing.T) {
 
 	now := time.Now()
 	enc := json.NewEncoder(pw)
-	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
 
 	// Connect to the socket BEFORE writing the "run" event.
 	// The handler should block until the span is registered.
@@ -226,7 +232,7 @@ func TestSpanContextPropagationWaitFor(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Now write the "run" event — this should unblock the socket handler.
-	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestLate"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestLate"})
 
 	select {
 	case sc := <-result:
@@ -235,9 +241,9 @@ func TestSpanContextPropagationWaitFor(t *testing.T) {
 		t.Fatal("timed out waiting for span context")
 	}
 
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg", Test: "TestLate"})
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg"})
-	pw.Close()
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg", Test: "TestLate"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: "example.com/pkg"})
+	require.NoError(t, pw.Close())
 
 	require.NoError(t, <-done)
 }
@@ -256,7 +262,7 @@ func TestSpanContextWithMiddleware(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "span.sock")
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	go serveSpanContexts(listener, registry)
 
@@ -281,11 +287,11 @@ func TestSpanContextWithMiddleware(t *testing.T) {
 
 	now := time.Now()
 	enc := json.NewEncoder(pw)
-	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: pkg})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "start", Package: pkg})
 
 	// Write the "run" event matching the test name that testctx will produce.
 	fullTestName := t.Name() + "/inner"
-	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: pkg, Test: fullTestName})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "run", Package: pkg, Test: fullTestName})
 
 	// Run the real middleware. WithTracing sees OTEL_TEST_SOCKET, connects
 	// to the socket, and adopts the span context from gotest.Run.
@@ -297,9 +303,9 @@ func TestSpanContextWithMiddleware(t *testing.T) {
 	})
 
 	// Finish the synthetic test events.
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: pkg, Test: fullTestName})
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: pkg})
-	pw.Close()
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: pkg, Test: fullTestName})
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "pass", Package: pkg})
+	require.NoError(t, pw.Close())
 
 	require.NoError(t, <-done)
 
@@ -334,8 +340,8 @@ func TestFailureStatusIgnoresTestOutput(t *testing.T) {
 
 	now := time.Now()
 	enc := json.NewEncoder(pw)
-	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
-	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestVerbose"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestVerbose"})
 
 	// Simulate testify-formatted error output as test2json would emit it.
 	// Go's testing.decorate adds "    file.go:line: " to the first line
@@ -347,12 +353,12 @@ func TestFailureStatusIgnoresTestOutput(t *testing.T) {
 		"    \tError:      \tExpected nil, but got error\n",
 		"    \tTest:       \tTestVerbose\n",
 	} {
-		enc.Encode(gotest.TestEvent{Time: now, Action: "output", Package: "example.com/pkg", Test: "TestVerbose", Output: line})
+		mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "output", Package: "example.com/pkg", Test: "TestVerbose", Output: line})
 	}
 
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg", Test: "TestVerbose", Elapsed: 0.01})
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg"})
-	pw.Close()
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg", Test: "TestVerbose", Elapsed: 0.01})
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg"})
+	require.NoError(t, pw.Close())
 
 	require.NoError(t, <-done)
 
@@ -380,8 +386,8 @@ func TestFailureStatusIgnoresNoisyTestOutput(t *testing.T) {
 
 	now := time.Now()
 	enc := json.NewEncoder(pw)
-	enc.Encode(gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
-	enc.Encode(gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestNoisy"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "start", Package: "example.com/pkg"})
+	mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "run", Package: "example.com/pkg", Test: "TestNoisy"})
 
 	// Mix of regular log output and testify error.
 	for _, line := range []string{
@@ -394,12 +400,12 @@ func TestFailureStatusIgnoresNoisyTestOutput(t *testing.T) {
 		"    test.go:50: cleanup: exit status 1\n",
 		"    test.go:60: server: shutting down\n",
 	} {
-		enc.Encode(gotest.TestEvent{Time: now, Action: "output", Package: "example.com/pkg", Test: "TestNoisy", Output: line})
+		mustEncode(t, enc, gotest.TestEvent{Time: now, Action: "output", Package: "example.com/pkg", Test: "TestNoisy", Output: line})
 	}
 
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg", Test: "TestNoisy", Elapsed: 0.01})
-	enc.Encode(gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg"})
-	pw.Close()
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg", Test: "TestNoisy", Elapsed: 0.01})
+	mustEncode(t, enc, gotest.TestEvent{Time: now.Add(time.Second), Action: "fail", Package: "example.com/pkg"})
+	require.NoError(t, pw.Close())
 
 	require.NoError(t, <-done)
 
@@ -422,8 +428,8 @@ func serveSpanContexts(listener net.Listener, registry *gotest.SpanContextRegist
 			return
 		}
 		go func() {
-			defer conn.Close()
-			conn.SetDeadline(time.Now().Add(10 * time.Second))
+			defer func() { _ = conn.Close() }()
+			_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 			scanner := bufio.NewScanner(conn)
 			if !scanner.Scan() {
 				return
@@ -434,7 +440,7 @@ func serveSpanContexts(listener net.Listener, registry *gotest.SpanContextRegist
 			if !ok {
 				return
 			}
-			fmt.Fprintf(conn, "00-%s-%s-%s\n", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
+			_, _ = fmt.Fprintf(conn, "00-%s-%s-%s\n", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
 		}()
 	}
 }
@@ -444,10 +450,11 @@ func requestSpanContext(t *testing.T, socketPath, testName string) trace.SpanCon
 	t.Helper()
 	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
 	require.NoError(t, err)
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	defer func() { _ = conn.Close() }()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(10*time.Second)))
 
-	fmt.Fprintln(conn, testName)
+	_, err = fmt.Fprintln(conn, testName)
+	require.NoError(t, err)
 
 	scanner := bufio.NewScanner(conn)
 	require.True(t, scanner.Scan(), "expected traceparent response from socket")

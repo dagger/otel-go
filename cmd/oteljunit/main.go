@@ -47,10 +47,10 @@ func run() error {
 				return err
 			}
 			if err := junit.Run(ctx, f, tp, opts...); err != nil {
-				f.Close()
+				_ = f.Close()
 				return fmt.Errorf("%s: %w", filename, err)
 			}
-			f.Close()
+			_ = f.Close()
 		}
 	} else {
 		// Read from stdin.

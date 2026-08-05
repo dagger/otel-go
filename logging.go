@@ -117,7 +117,7 @@ type spanStream struct {
 
 // Close emits an EOF log record.
 func (w *spanStream) Close() error {
-	w.Writer.Emit(log.StringValue(""), log.Bool(StdioEOFAttr, true))
+	w.Emit(log.StringValue(""), log.Bool(StdioEOFAttr, true))
 	return nil
 }
 

@@ -27,7 +27,7 @@ func runFixture(t *testing.T) []sdktrace.ReadOnlySpan {
 
 	f, err := os.Open("testdata/sample.jsonl")
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	spanRecorder := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
@@ -67,19 +67,6 @@ func findSpansByTestCaseName(spans []sdktrace.ReadOnlySpan, testName string) []s
 	return matches
 }
 
-func findResultSpanByTestCaseName(spans []sdktrace.ReadOnlySpan, testName string) sdktrace.ReadOnlySpan {
-	matches := findSpansByTestCaseName(spans, testName)
-	for i := len(matches) - 1; i >= 0; i-- {
-		if matches[i].Status().Code == codes.Ok || matches[i].Status().Code == codes.Error {
-			return matches[i]
-		}
-	}
-	if len(matches) > 0 {
-		return matches[len(matches)-1]
-	}
-	return nil
-}
-
 func findContinuationSpanFor(spans []sdktrace.ReadOnlySpan, testSpan sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
 	for _, s := range spans {
 		if s.Name() != "continue" {
@@ -101,15 +88,6 @@ func spanNames(spans []sdktrace.ReadOnlySpan) []string {
 		names = append(names, s.Name())
 	}
 	return names
-}
-
-func otherSpan(spans []sdktrace.ReadOnlySpan, span sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
-	for _, s := range spans {
-		if s.SpanContext().SpanID() != span.SpanContext().SpanID() {
-			return s
-		}
-	}
-	return nil
 }
 
 type recordingLogExporter struct {

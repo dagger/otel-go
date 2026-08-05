@@ -57,7 +57,7 @@ func TestSubprocess(t *testing.T) {
 			})
 		}
 		data, _ := json.Marshal(results)
-		os.WriteFile(spanFile, data, 0644)
+		_ = os.WriteFile(spanFile, data, 0644)
 	})
 
 	tt.Run("SingleError", func(ctx context.Context, t *testctx.T) {
@@ -110,8 +110,8 @@ func runSubprocess(t testing.TB, subtest string) []spanResult {
 
 	f, err := os.CreateTemp("", "oteltest-spans-*.json")
 	require.NoError(t, err)
-	f.Close()
-	defer os.Remove(f.Name())
+	require.NoError(t, f.Close())
+	defer func() { _ = os.Remove(f.Name()) }()
 
 	cmd := exec.Command(os.Args[0],
 		"-test.run=^TestSubprocess$/^"+subtest+"$",
@@ -120,7 +120,7 @@ func runSubprocess(t testing.TB, subtest string) []spanResult {
 	// Clear OTEL_TEST_SOCKET so the subprocess doesn't try to connect
 	// to the parent's otelgotest socket — it has its own span recorder.
 	cmd.Env = append(os.Environ(), "OTELTEST_SPAN_FILE="+f.Name(), "OTEL_TEST_SOCKET=")
-	cmd.Run() // ignore exit code; the subprocess test is expected to fail
+	_ = cmd.Run() // ignore exit code; the subprocess test is expected to fail
 
 	data, err := os.ReadFile(f.Name())
 	require.NoError(t, err)

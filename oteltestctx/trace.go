@@ -261,10 +261,14 @@ func requestSpanContext(addr, testName string) (trace.SpanContext, error) {
 	if err != nil {
 		return trace.SpanContext{}, err
 	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return trace.SpanContext{}, err
+	}
 
-	fmt.Fprintln(conn, testName)
+	if _, err := fmt.Fprintln(conn, testName); err != nil {
+		return trace.SpanContext{}, err
+	}
 
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {

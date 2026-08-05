@@ -1,0 +1,3 @@
+[imports.Dagger]
+dagger = true
+service = ["dagger", "--x-release=1.0.0-beta.9", "session"]

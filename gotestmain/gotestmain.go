@@ -70,15 +70,15 @@ func Main(m *testing.M) int {
 	jsonOut, err := test2json.StdoutPipe()
 	if err != nil {
 		os.Stdout = origStdout
-		pipeW.Close()
-		pipeR.Close()
+		_ = pipeW.Close()
+		_ = pipeR.Close()
 		return m.Run()
 	}
 
 	if err := test2json.Start(); err != nil {
 		os.Stdout = origStdout
-		pipeW.Close()
-		pipeR.Close()
+		_ = pipeW.Close()
+		_ = pipeR.Close()
 		return m.Run()
 	}
 
@@ -97,11 +97,11 @@ func Main(m *testing.M) int {
 	exitCode := m.Run()
 
 	// Close the write end so test2json gets EOF.
-	pipeW.Close()
+	_ = pipeW.Close()
 
 	// Wait for the pipeline to finish.
 	<-done
-	test2json.Wait()
+	_ = test2json.Wait()
 
 	// Restore stdout for any final output.
 	os.Stdout = origStdout
