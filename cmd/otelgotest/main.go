@@ -79,7 +79,7 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "otelgotest: tmpdir: %v\n", err)
 		return execGoTest(args)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	socketPath := filepath.Join(tmpDir, "span.sock")
 	listener, err := net.Listen("unix", socketPath)
@@ -87,7 +87,7 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "otelgotest: socket listen: %v\n", err)
 		return execGoTest(args)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	go serveSpanContexts(listener, registry)
 
@@ -128,9 +128,11 @@ func run() int {
 	if lp := otel.LoggerProvider(ctx); lp != nil {
 		opts = append(opts, gotest.WithLoggerProvider(lp))
 	}
-	gotest.Run(ctx, stream, tp, opts...)
+	if err := gotest.Run(ctx, stream, tp, opts...); err != nil {
+		fmt.Fprintf(os.Stderr, "otelgotest: process events: %v\n", err)
+	}
 
-	cmd.Wait()
+	_ = cmd.Wait() // exit code is read from cmd.ProcessState below
 
 	if cmd.ProcessState != nil {
 		return cmd.ProcessState.ExitCode()
@@ -146,7 +148,7 @@ func execGoTest(args []string) int {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	cmd.Run()
+	_ = cmd.Run() // exit code is read from cmd.ProcessState below
 	if cmd.ProcessState != nil {
 		return cmd.ProcessState.ExitCode()
 	}
@@ -222,8 +224,8 @@ func serveSpanContexts(listener net.Listener, registry *gotest.SpanContextRegist
 }
 
 func handleSpanContextConn(conn net.Conn, registry *gotest.SpanContextRegistry) {
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
@@ -239,7 +241,7 @@ func handleSpanContextConn(conn net.Conn, registry *gotest.SpanContextRegistry) 
 		return
 	}
 
-	fmt.Fprintf(conn, "%s\n", formatTraceparent(sc))
+	_, _ = fmt.Fprintf(conn, "%s\n", formatTraceparent(sc))
 }
 
 func formatTraceparent(sc trace.SpanContext) string {

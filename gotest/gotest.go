@@ -140,7 +140,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 			// Non-JSON line (e.g., build error). Pass through to output.
 			if cfg.output != nil {
-				io.WriteString(cfg.output, scanner.Text()+"\n")
+				_, _ = io.WriteString(cfg.output, scanner.Text()+"\n")
 			}
 			continue
 		}
@@ -156,7 +156,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					ts.bufferedOut.WriteString(ev.Output)
 				}
 			} else if cfg.verbose || strings.TrimSpace(ev.Output) != "PASS" {
-				io.WriteString(cfg.output, ev.Output)
+				_, _ = io.WriteString(cfg.output, ev.Output)
 			}
 		}
 
@@ -331,7 +331,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 
 				// Route to span logs if configured.
 				if ts.streams != nil {
-					io.WriteString(ts.streams.Stdout, ev.Output)
+					_, _ = io.WriteString(ts.streams.Stdout, ev.Output)
 				}
 			}
 
@@ -341,7 +341,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			}
 			if ts, ok := spans[key]; ok {
 				if ts.streams != nil {
-					ts.streams.Close()
+					_ = ts.streams.Close()
 				}
 				// Non-verbose: discard buffered output for passing tests.
 				ts.span.SetStatus(codes.Ok, "test passed")
@@ -356,11 +356,11 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			}
 			if ts, ok := spans[key]; ok {
 				if ts.streams != nil {
-					ts.streams.Close()
+					_ = ts.streams.Close()
 				}
 				// Non-verbose: flush buffered output for failing tests.
 				if cfg.output != nil && !cfg.verbose && ts.bufferedOut.Len() > 0 {
-					io.WriteString(cfg.output, ts.bufferedOut.String())
+					_, _ = io.WriteString(cfg.output, ts.bufferedOut.String())
 				}
 				ts.span.SetStatus(codes.Error, "test failed")
 				ts.span.SetAttributes(semconv.TestSuiteRunStatusFailure)
@@ -374,7 +374,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			}
 			if ts, ok := spans[key]; ok {
 				if ts.streams != nil {
-					ts.streams.Close()
+					_ = ts.streams.Close()
 				}
 				// Non-verbose: discard buffered output for skipped tests.
 				ts.span.SetStatus(codes.Ok, "test skipped")

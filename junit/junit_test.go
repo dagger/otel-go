@@ -20,7 +20,7 @@ func runFixture(t *testing.T) []sdktrace.ReadOnlySpan {
 
 	f, err := os.Open("testdata/sample.xml")
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	spanRecorder := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder))
