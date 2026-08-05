@@ -2,8 +2,6 @@
 // for each test, with proper parent/child nesting for subtests.
 package gotest
 
-//go:generate sh -c "go -C testdata/sample test -json -count=1 ./... > testdata/sample.jsonl 2>&1 || true"
-
 import (
 	"bufio"
 	"context"

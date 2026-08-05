@@ -1,8 +1,6 @@
 // Package junit converts JUnit XML test suites into OTel spans.
 package junit
 
-//go:generate sh -c "go-junit-report -parser gojson < ../gotest/testdata/sample.jsonl > testdata/sample.xml"
-
 import (
 	"context"
 	"io"

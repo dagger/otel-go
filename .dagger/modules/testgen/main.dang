@@ -1,0 +1,50 @@
+"""
+Regenerates the sample test-report fixtures shared by the gotest and junit
+packages.
+
+The fixtures come from actually running the sample tests, so their content
+(timings, output ordering) is nondeterministic. That rules out go:generate
+directives and the auto-run @generate hook, which would churn the fixtures on
+every run — regenerate them manually with `generate` and commit the result.
+"""
+type Testgen {
+  """
+  Regenerate gotest/testdata/sample.jsonl and junit/testdata/sample.xml.
+
+  Runs the intentionally-failing sample tests under gotest/testdata/sample
+  with `go test -json` to produce the JSON stream fixture, then feeds that
+  stream through go-junit-report (pinned by the root go.mod tool directive)
+  to produce the JUnit XML fixture derived from it.
+  """
+  generate(ws: Workspace!): Changeset! {
+    let before = ws.directory(
+      "/",
+      include: [
+        # go-junit-report is resolved through the root module's tool directive.
+        "go.mod",
+        "go.sum",
+        "gotest/testdata/sample/**",
+        # Current fixtures, so the changeset reports edits rather than additions.
+        "gotest/testdata/sample.jsonl",
+        "junit/testdata/sample.xml",
+      ],
+    )
+    let after = go
+      .base
+      .withWorkdir("/ws")
+      .withMountedCache("/go/pkg/mod", cacheVolume("go-mod"))
+      .withEnvVariable("GOMODCACHE", "/go/pkg/mod")
+      .withMountedCache("/root/.cache/go-build", cacheVolume("go-build"))
+      .withEnvVariable("GOCACHE", "/root/.cache/go-build")
+      .withDirectory(".", before)
+      # The recorded run captures 2>&1, so fetch the toolchain the sample
+      # module asks for up front, where `go: downloading ...` noise can't
+      # leak into the fixture.
+      .withExec(["sh", "-c", "go -C gotest/testdata/sample test -run '^$' ./... >/dev/null 2>&1 || true"])
+      # The sample tests fail by design, hence `|| true`.
+      .withExec(["sh", "-c", "go -C gotest/testdata/sample test -json -count=1 ./... > gotest/testdata/sample.jsonl 2>&1 || true"])
+      .withExec(["sh", "-c", "mkdir -p junit/testdata && go run github.com/jstemmer/go-junit-report/v2 -parser gojson < gotest/testdata/sample.jsonl > junit/testdata/sample.xml"])
+      .directory(".")
+    after.changes(before)
+  }
+}
