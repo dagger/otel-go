@@ -597,6 +597,47 @@ func TestSkippedPackage(t *testing.T) {
 	assert.Contains(t, pkg.Attributes(), semconv.TestSuiteRunStatusSkipped)
 }
 
+func TestPackageWithNoTestsToRunIsSkipped(t *testing.T) {
+	t.Parallel()
+
+	// go test -run NoSuchTest still reports the package as passing, printing
+	// "[no tests to run]" - it must not be reported as a passing suite.
+	now := time.Now()
+	pkg := "example.com/pkg"
+	spans := runEvents(t, []gotest.TestEvent{
+		{Time: now, Action: "start", Package: pkg},
+		{Time: now, Action: "output", Package: pkg, Output: "testing: warning: no tests to run\n"},
+		{Time: now, Action: "output", Package: pkg, Output: "ok \texample.com/pkg\t0.001s [no tests to run]\n"},
+		{Time: now, Action: "pass", Package: pkg},
+	})
+
+	pkgSpan := findSpan(spans, pkg)
+	require.NotNil(t, pkgSpan)
+	assert.Equal(t, codes.Ok, pkgSpan.Status().Code)
+	assert.Contains(t, pkgSpan.Attributes(), semconv.TestSuiteRunStatusSkipped,
+		"a package that ran no tests must not be reported as passing")
+	assert.NotContains(t, pkgSpan.Attributes(), semconv.TestCaseResultStatusPass)
+}
+
+func TestPassingPackageWithTests(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	pkg := "example.com/pkg"
+	spans := runEvents(t, []gotest.TestEvent{
+		{Time: now, Action: "start", Package: pkg},
+		{Time: now, Action: "run", Package: pkg, Test: "TestOK"},
+		{Time: now, Action: "pass", Package: pkg, Test: "TestOK"},
+		{Time: now, Action: "pass", Package: pkg},
+	})
+
+	pkgSpan := findSpan(spans, pkg)
+	require.NotNil(t, pkgSpan)
+	assert.Equal(t, codes.Ok, pkgSpan.Status().Code)
+	assert.Contains(t, pkgSpan.Attributes(), semconv.TestCaseResultStatusPass)
+	assert.NotContains(t, pkgSpan.Attributes(), semconv.TestSuiteRunStatusSkipped)
+}
+
 func TestSpanCount(t *testing.T) {
 	spans := runFixture(t)
 
