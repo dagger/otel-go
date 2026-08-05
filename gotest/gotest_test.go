@@ -616,7 +616,7 @@ func TestPackageWithNoTestsToRunIsSkipped(t *testing.T) {
 	assert.Equal(t, codes.Ok, pkgSpan.Status().Code)
 	assert.Contains(t, pkgSpan.Attributes(), semconv.TestSuiteRunStatusSkipped,
 		"a package that ran no tests must not be reported as passing")
-	assert.NotContains(t, pkgSpan.Attributes(), semconv.TestSuiteRunStatusSuccess)
+	assert.NotContains(t, pkgSpan.Attributes(), semconv.TestCaseResultStatusPass)
 }
 
 func TestPassingPackageWithTests(t *testing.T) {
@@ -634,7 +634,7 @@ func TestPassingPackageWithTests(t *testing.T) {
 	pkgSpan := findSpan(spans, pkg)
 	require.NotNil(t, pkgSpan)
 	assert.Equal(t, codes.Ok, pkgSpan.Status().Code)
-	assert.Contains(t, pkgSpan.Attributes(), semconv.TestSuiteRunStatusSuccess)
+	assert.Contains(t, pkgSpan.Attributes(), semconv.TestCaseResultStatusPass)
 	assert.NotContains(t, pkgSpan.Attributes(), semconv.TestSuiteRunStatusSkipped)
 }
 

@@ -188,7 +188,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 						ps.span.SetAttributes(semconv.TestSuiteRunStatusSkipped)
 					} else {
 						ps.span.SetStatus(codes.Ok, "")
-						ps.span.SetAttributes(semconv.TestSuiteRunStatusSuccess)
+						ps.span.SetAttributes(semconv.TestCaseResultStatusPass)
 					}
 					ps.span.End(trace.WithTimestamp(spanEndTime(ps, ev)))
 					delete(pkgSpans, ev.Package)
