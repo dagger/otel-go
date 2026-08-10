@@ -919,6 +919,10 @@ func LogValueToPB(v log.Value) *otlpcommonv1.AnyValue {
 		av.Value = &otlpcommonv1.AnyValue_StringValue{
 			StringValue: v.AsString(),
 		}
+	case log.KindBytes:
+		av.Value = &otlpcommonv1.AnyValue_BytesValue{
+			BytesValue: v.AsBytes(),
+		}
 	case log.KindSlice:
 		array := &otlpcommonv1.ArrayValue{}
 		for _, e := range v.AsSlice() {
