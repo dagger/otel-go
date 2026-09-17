@@ -27,6 +27,10 @@ func TestCoalescingSpanExporter(t *testing.T) {
 	end := update
 	end.EndTime = start.StartTime.Add(time.Millisecond)
 	end.Attributes = []attribute.KeyValue{attribute.String("result", "done")}
+	endUpdate := end
+	endUpdate.Name = "completed update"
+	zeroDuration := end
+	zeroDuration.EndTime = zeroDuration.StartTime
 	otherSpan := start
 	otherSpan.SpanContext = start.SpanContext.WithSpanID(trace.SpanID{2})
 	otherTrace := start
@@ -41,6 +45,26 @@ func TestCoalescingSpanExporter(t *testing.T) {
 			name:    "completed within a batch",
 			batches: []tracetest.SpanStubs{{start, otherSpan, update, end}},
 			want:    tracetest.SpanStubs{end, otherSpan},
+		},
+		{
+			name:    "completed before started",
+			batches: []tracetest.SpanStubs{{end, start}},
+			want:    tracetest.SpanStubs{end},
+		},
+		{
+			name:    "live updates cannot replace completion",
+			batches: []tracetest.SpanStubs{{start, end, update}},
+			want:    tracetest.SpanStubs{end},
+		},
+		{
+			name:    "last completed update wins",
+			batches: []tracetest.SpanStubs{{end, start, endUpdate, update}},
+			want:    tracetest.SpanStubs{endUpdate},
+		},
+		{
+			name:    "zero duration completion before started",
+			batches: []tracetest.SpanStubs{{zeroDuration, start}},
+			want:    tracetest.SpanStubs{zeroDuration},
 		},
 		{
 			name:    "latest live update",

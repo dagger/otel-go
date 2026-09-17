@@ -34,8 +34,9 @@ func (p *LiveSpanProcessor) OnStart(ctx context.Context, span sdktrace.ReadWrite
 	p.OnEnd(SnapshotSpan(span))
 }
 
-// coalescingSpanExporter keeps the latest update for each span in a batch. If a
-// span starts and ends before the batch is exported, only its final state is sent.
+// coalescingSpanExporter keeps the latest update for each span in a batch,
+// preferring completed records over live ones regardless of arrival order.
+// If a span starts and ends in the batch, only its final state is sent.
 // Updates in subsequent batches are still exported so long-running spans remain
 // visible while they are running.
 type coalescingSpanExporter struct {
@@ -53,7 +54,10 @@ func (exp coalescingSpanExporter) ExportSpans(ctx context.Context, spans []sdktr
 		sc := span.SpanContext()
 		key := spanKey{sc.TraceID(), sc.SpanID()}
 		if i, ok := indices[key]; ok {
-			batch[i] = span
+			previous := batch[i]
+			if previous.EndTime().Before(previous.StartTime()) || !span.EndTime().Before(span.StartTime()) {
+				batch[i] = span
+			}
 		} else {
 			indices[key] = len(batch)
 			batch = append(batch, span)
