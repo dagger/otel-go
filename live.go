@@ -15,7 +15,7 @@ type LiveSpanProcessor struct {
 
 func NewLiveSpanProcessor(exp sdktrace.SpanExporter) *LiveSpanProcessor {
 	if exp != nil {
-		exp = coalescingSpanExporter{exp}
+		exp = CoalescingSpanExporter{SpanExporter: exp}
 	}
 	return &LiveSpanProcessor{
 		SpanProcessor: sdktrace.NewBatchSpanProcessor(
@@ -34,16 +34,22 @@ func (p *LiveSpanProcessor) OnStart(ctx context.Context, span sdktrace.ReadWrite
 	p.OnEnd(SnapshotSpan(span))
 }
 
-// coalescingSpanExporter keeps the latest update for each span in a batch,
+// CoalescingSpanExporter keeps the latest update for each span in a batch,
 // preferring completed records over live ones regardless of arrival order.
+// Among records with the same completion state, the last record wins.
 // If a span starts and ends in the batch, only its final state is sent.
 // Updates in subsequent batches are still exported so long-running spans remain
 // visible while they are running.
-type coalescingSpanExporter struct {
+//
+// Wrap an exporter before passing it to a batch span processor. Coalescing is
+// local to each ExportSpans call and does not reduce the processor's queue usage.
+type CoalescingSpanExporter struct {
 	sdktrace.SpanExporter
 }
 
-func (exp coalescingSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+// ExportSpans coalesces span updates without modifying the input slice and
+// exports the retained records through the wrapped SpanExporter.
+func (exp CoalescingSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	type spanKey struct {
 		traceID trace.TraceID
 		spanID  trace.SpanID

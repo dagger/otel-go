@@ -1,10 +1,11 @@
-package otel
+package otel_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
+	otel "github.com/dagger/otel-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
@@ -84,7 +85,7 @@ func TestCoalescingSpanExporter(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := tracetest.NewInMemoryExporter()
-			exporter := coalescingSpanExporter{recorder}
+			exporter := otel.CoalescingSpanExporter{SpanExporter: recorder}
 			for _, batch := range tc.batches {
 				spans := batch.Snapshots()
 				require.NoError(t, exporter.ExportSpans(t.Context(), spans))
@@ -97,7 +98,7 @@ func TestCoalescingSpanExporter(t *testing.T) {
 
 func TestLiveSpanProcessorExportsStartAndEnd(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
-	processor := NewLiveSpanProcessor(exporter)
+	processor := otel.NewLiveSpanProcessor(exporter)
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(processor))
 	t.Cleanup(func() {
 		require.NoError(t, provider.Shutdown(context.Background()))
