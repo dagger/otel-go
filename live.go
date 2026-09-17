@@ -4,6 +4,7 @@ import (
 	"context"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // LiveSpanProcessor is a SpanProcessor whose OnStart calls OnEnd on the
@@ -13,6 +14,9 @@ type LiveSpanProcessor struct {
 }
 
 func NewLiveSpanProcessor(exp sdktrace.SpanExporter) *LiveSpanProcessor {
+	if exp != nil {
+		exp = CoalescingSpanExporter{SpanExporter: exp}
+	}
 	return &LiveSpanProcessor{
 		SpanProcessor: sdktrace.NewBatchSpanProcessor(
 			// NOTE: span heartbeating is handled by the Cloud exporter
@@ -28,4 +32,42 @@ func (p *LiveSpanProcessor) OnStart(ctx context.Context, span sdktrace.ReadWrite
 	// before being exported, resulting in two completed spans being sent, which
 	// will confuse traditional OpenTelemetry services.
 	p.OnEnd(SnapshotSpan(span))
+}
+
+// CoalescingSpanExporter keeps the latest update for each span in a batch,
+// preferring completed records over live ones regardless of arrival order.
+// Among records with the same completion state, the last record wins.
+// If a span starts and ends in the batch, only its final state is sent.
+// Updates in subsequent batches are still exported so long-running spans remain
+// visible while they are running.
+//
+// Wrap an exporter before passing it to a batch span processor. Coalescing is
+// local to each ExportSpans call and does not reduce the processor's queue usage.
+type CoalescingSpanExporter struct {
+	sdktrace.SpanExporter
+}
+
+// ExportSpans coalesces span updates without modifying the input slice and
+// exports the retained records through the wrapped SpanExporter.
+func (exp CoalescingSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	type spanKey struct {
+		traceID trace.TraceID
+		spanID  trace.SpanID
+	}
+	indices := make(map[spanKey]int, len(spans))
+	batch := make([]sdktrace.ReadOnlySpan, 0, len(spans))
+	for _, span := range spans {
+		sc := span.SpanContext()
+		key := spanKey{sc.TraceID(), sc.SpanID()}
+		if i, ok := indices[key]; ok {
+			previous := batch[i]
+			if previous.EndTime().Before(previous.StartTime()) || !span.EndTime().Before(span.StartTime()) {
+				batch[i] = span
+			}
+		} else {
+			indices[key] = len(batch)
+			batch = append(batch, span)
+		}
+	}
+	return exp.SpanExporter.ExportSpans(ctx, batch)
 }
