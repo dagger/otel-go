@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,6 +41,7 @@ type testSpan struct {
 	// ts.span is replaced by the internal continuation span.
 	ctx         context.Context
 	parentCtx   context.Context
+	packageName string
 	testName    string
 	spanName    string
 	output      strings.Builder
@@ -196,6 +198,23 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				delete(activeTests, ev.Package)
 				delete(pkgRuns, ev.Package)
 			case "fail":
+				// A timeout or panic can end the package without a test-level
+				// failure event. Preserve output from its unfinished tests;
+				// completed tests already flushed or discarded their buffers.
+				if cfg.output != nil && !cfg.verbose {
+					var pending []string
+					for key, ts := range spans {
+						if ts.packageName == ev.Package && ts.bufferedOut.Len() > 0 {
+							pending = append(pending, key)
+						}
+					}
+					sort.Strings(pending)
+					for _, key := range pending {
+						ts := spans[key]
+						_, _ = io.WriteString(cfg.output, ts.bufferedOut.String())
+						ts.bufferedOut.Reset()
+					}
+				}
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					ps.span.SetStatus(codes.Error, "package had failures")
 					ps.span.SetAttributes(semconv.TestSuiteRunStatusFailure)
@@ -258,12 +277,13 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 			)
 
 			ts := &testSpan{
-				span:      span,
-				spanStart: ev.Time,
-				ctx:       spanCtx,
-				parentCtx: parentCtx,
-				testName:  ev.Test,
-				spanName:  spanName,
+				span:        span,
+				spanStart:   ev.Time,
+				ctx:         spanCtx,
+				parentCtx:   parentCtx,
+				packageName: ev.Package,
+				testName:    ev.Test,
+				spanName:    spanName,
 			}
 			if cfg.loggerProvider != nil {
 				spanCtx = dagotel.WithLoggerProvider(spanCtx, cfg.loggerProvider)
