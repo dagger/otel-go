@@ -138,9 +138,9 @@ func ResourceToPB(r resource.Resource) *otlpresourcev1.Resource {
 // protobuf encoded attributes.
 func ResourceFromPB(schemaURL string, pb *otlpresourcev1.Resource) *resource.Resource {
 	if schemaURL == "" {
-		return resource.NewSchemaless(AttributesFromProto(pb.Attributes)...)
+		return resource.NewSchemaless(AttributesFromProto(pb.GetAttributes())...)
 	}
-	return resource.NewWithAttributes(schemaURL, AttributesFromProto(pb.Attributes)...)
+	return resource.NewWithAttributes(schemaURL, AttributesFromProto(pb.GetAttributes())...)
 }
 
 // ResourcePtrToPB transforms a *Resource into an OTLP Resource.
@@ -850,6 +850,9 @@ func logKeyValue(v *otlpcommonv1.KeyValue) log.KeyValue {
 }
 
 func attrValue(v *otlpcommonv1.AnyValue) attribute.Value {
+	if v == nil {
+		return attribute.StringValue("")
+	}
 	switch x := v.Value.(type) {
 	case *otlpcommonv1.AnyValue_StringValue:
 		return attribute.StringValue(v.GetStringValue())
@@ -870,6 +873,9 @@ func attrValue(v *otlpcommonv1.AnyValue) attribute.Value {
 }
 
 func LogValueFromPB(v *otlpcommonv1.AnyValue) log.Value {
+	if v == nil {
+		return log.StringValue("")
+	}
 	switch x := v.Value.(type) {
 	case *otlpcommonv1.AnyValue_StringValue:
 		return log.StringValue(v.GetStringValue())
