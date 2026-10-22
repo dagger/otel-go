@@ -430,7 +430,7 @@ func TestPrebuiltStdoutFails(t *testing.T) {
 	if err != nil {
 		t.Skipf("no /dev/full: %v", err)
 	}
-	defer full.Close()
+	defer func() { _ = full.Close() }()
 	bin := buildPrebuilt(t)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
