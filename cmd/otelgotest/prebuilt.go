@@ -114,15 +114,17 @@ func runPrebuilt(ctx context.Context, p *prebuilt, tp trace.TracerProvider, opts
 	if _, ok := lookupTestFlag(userArgs, "fuzzcachedir"); fuzz != "" && !ok {
 		args = append(args, "-test.fuzzcachedir="+fuzzCacheDir(pkg))
 	}
-	if _, ok := lookupTestFlag(userArgs, "gocoverdir"); builtWithCover(info) && !ok {
-		// As go test does, also set GOCOVERDIR, for covered binaries the
-		// tests run.
+	if builtWithCover(info) {
+		// As go test does, also set GOCOVERDIR, for covered programs the
+		// tests run. A -test.gocoverdir of the user's overrides the flag.
 		dir, err := os.MkdirTemp("", "otelgotest-gocoverdir")
-		if err == nil {
-			defer func() { _ = os.RemoveAll(dir) }()
-			args = append(args, "-test.gocoverdir="+dir)
-			env = append(env, "GOCOVERDIR="+dir)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "otelgotest: failed to create temporary dir: %v\n", err)
+			return 1
 		}
+		defer func() { _ = os.RemoveAll(dir) }()
+		args = append(args, "-test.gocoverdir="+dir)
+		env = append(env, "GOCOVERDIR="+dir)
 	}
 	args = append(args, "-test.v=test2json")
 	timeout := defaultTestTimeout

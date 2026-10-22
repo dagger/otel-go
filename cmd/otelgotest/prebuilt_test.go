@@ -387,9 +387,30 @@ func TestPrebuiltFuzzAfterFlagValue(t *testing.T) {
 // test gives it, also as GOCOVERDIR for the covered programs tests run.
 func TestPrebuiltCoverDir(t *testing.T) {
 	bin := buildPrebuilt(t, "-cover")
-	out, code := runOtelgotest(t, hermeticEnv(), bin, "-test.run=^TestCoverDir$", "-test.v")
-	assert.Equal(t, 0, code, out)
-	assert.Contains(t, out, "GOCOVERDIR is set")
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "default"},
+		{name: "explicit", args: []string{"-test.gocoverdir=" + t.TempDir()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string{bin, "-test.run=^TestCoverDir$", "-test.v"}, tc.args...)
+			out, code := runOtelgotest(t, hermeticEnv("GOCOVERDIR="), args...)
+			assert.Equal(t, 0, code, out)
+			assert.Contains(t, out, "GOCOVERDIR is set")
+		})
+	}
+}
+
+// TestPrebuiltCoverDirFails stops before running a covered binary when the
+// coverage directory cannot be created, as go test does.
+func TestPrebuiltCoverDirFails(t *testing.T) {
+	bin := buildPrebuilt(t, "-cover")
+	out, code := runOtelgotest(t, hermeticEnv("TMPDIR="+filepath.Join(t.TempDir(), "missing")), bin, "-test.run=^TestCoverDir$", "-test.v")
+	assert.Equal(t, 1, code, out)
+	assert.Contains(t, out, "failed to create temporary dir")
+	assert.NotContains(t, out, "=== RUN")
 }
 
 // TestPrebuiltFuzz fuzzes with a prebuilt binary, which needs the fuzz cache
