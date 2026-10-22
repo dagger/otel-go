@@ -7,7 +7,7 @@
 source = "github.com/dagger/go"
 
 [modules.go.settings]
-test = ["*", "!gotest/testdata/sample"]
+test = ["*", "!gotest/testdata/sample", "!cmd/otelgotest/testdata/prebuilt"]
 includeExtraFiles = "./junit/testdata/sample.xml"
 
 [modules.dagger-dang-sdk]

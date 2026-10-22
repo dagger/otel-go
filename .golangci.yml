@@ -1,0 +1,8 @@
+version: "2"
+
+linters:
+  exclusions:
+    paths:
+      # An unmodified copy of Go's cmd/internal/test2json, kept byte-for-byte
+      # so it can be updated from Go; see its README.
+      - internal/test2json
