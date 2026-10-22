@@ -57,3 +57,23 @@ func FuzzEcho(f *testing.F) {
 		_ = Echo(s)
 	})
 }
+
+// TestTimeout checks the binary has a timeout, as go test's default gives it.
+func TestTimeout(t *testing.T) {
+	if _, ok := t.Deadline(); !ok {
+		t.Fatal("no timeout")
+	}
+}
+
+// TestCoverDir checks a covered binary gets the coverage directory go test
+// gives it, also as GOCOVERDIR for the covered programs tests run.
+func TestCoverDir(t *testing.T) {
+	dir := os.Getenv("GOCOVERDIR")
+	if dir == "" {
+		t.Fatal("GOCOVERDIR is not set")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("GOCOVERDIR is set")
+}

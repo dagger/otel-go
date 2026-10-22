@@ -106,13 +106,23 @@ func runPrebuilt(ctx context.Context, p *prebuilt, tp trace.TracerProvider, opts
 	userArgs := p.args
 
 	// go test passes -test.paniconexit0, -test.fuzzcachedir when fuzzing,
-	// then -test.v=test2json and its default timeout, then the user's flags.
-	// Like go test -json -v, a user's -test.v overrides -test.v=test2json;
-	// test2json copes.
+	// -test.gocoverdir when covering, then -test.v=test2json and its default
+	// timeout, then the user's flags. Like go test -json -v, a user's
+	// -test.v overrides -test.v=test2json; test2json copes.
 	args := []string{"-test.paniconexit0"}
 	fuzz, _ := lookupTestFlag(userArgs, "fuzz")
 	if _, ok := lookupTestFlag(userArgs, "fuzzcachedir"); fuzz != "" && !ok {
 		args = append(args, "-test.fuzzcachedir="+fuzzCacheDir(pkg))
+	}
+	if _, ok := lookupTestFlag(userArgs, "gocoverdir"); builtWithCover(info) && !ok {
+		// As go test does, also set GOCOVERDIR, for covered binaries the
+		// tests run.
+		dir, err := os.MkdirTemp("", "otelgotest-gocoverdir")
+		if err == nil {
+			defer func() { _ = os.RemoveAll(dir) }()
+			args = append(args, "-test.gocoverdir="+dir)
+			env = append(env, "GOCOVERDIR="+dir)
+		}
 	}
 	args = append(args, "-test.v=test2json")
 	timeout := defaultTestTimeout
@@ -121,9 +131,9 @@ func runPrebuilt(ctx context.Context, p *prebuilt, tp trace.TracerProvider, opts
 	} else if d, err := time.ParseDuration(v); err == nil {
 		timeout = d
 	} else {
-		// Not a timeout after all, or one the binary will reject: either
-		// way, leave it to the binary, without a backstop.
-		timeout = 0
+		// Not a timeout after all, or one the binary will reject: keep go
+		// test's default in place, which the binary's own flag overrides.
+		args = append(args, fmt.Sprintf("-test.timeout=%v", timeout))
 	}
 	args = append(args, userArgs...)
 	bench, _ := lookupTestFlag(userArgs, "bench")
@@ -295,36 +305,28 @@ var boolTestFlags = map[string]bool{
 // lookupTestFlag returns the last value given for the test binary flag
 // -test.<name>, in the -flag=value or -flag value form, scanning as the flag
 // package parses: up to "--" or the first argument that is neither a flag
-// nor a flag's value. Without the binary's flag set, any other flag given
-// without "=" is assumed to take the next argument as its value.
+// nor a flag's value. The testing package's own flags take a value unless
+// they are boolean; without the binary's flag set, any other flag given
+// without "=" is assumed to take the next argument as its value unless that
+// looks like a flag.
 func lookupTestFlag(args []string, name string) (value string, ok bool) {
-	takesValue := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--" {
+		if arg == "--" || !strings.HasPrefix(arg, "-") || arg == "-" {
 			break
 		}
-		if !strings.HasPrefix(arg, "-") || arg == "-" {
-			if !takesValue {
-				break
-			}
-			takesValue = false
-			continue
-		}
 		flagName, flagValue, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
-		takesValue = !hasValue && !boolTestFlags[flagName]
-		if flagName != "test."+name {
-			continue
-		}
-		if !hasValue {
-			if i+1 == len(args) {
-				break
+		if !hasValue && !boolTestFlags[flagName] && i+1 < len(args) {
+			// The flag package takes the next argument as a flag's value
+			// whatever it looks like.
+			if next := args[i+1]; strings.HasPrefix(flagName, "test.") || !strings.HasPrefix(next, "-") {
+				i++
+				flagValue, hasValue = next, true
 			}
-			i++
-			flagValue = args[i]
-			takesValue = false
 		}
-		value, ok = flagValue, true
+		if flagName == "test."+name && hasValue {
+			value, ok = flagValue, true
+		}
 	}
 	return value, ok
 }

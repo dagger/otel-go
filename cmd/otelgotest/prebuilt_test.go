@@ -351,6 +351,8 @@ func TestLookupTestFlag(t *testing.T) {
 		{name: "after a custom flag's value", args: []string{"-greeting", "hello", "-test.timeout=3m"}, value: "3m", ok: true},
 		{name: "after a custom flag", args: []string{"-update=true", "-test.timeout=3m"}, value: "3m", ok: true},
 		{name: "missing value", args: []string{"-test.timeout"}},
+		{name: "a test flag's value looks like a flag", args: []string{"-test.run", "--", "-test.timeout=3m"}, value: "3m", ok: true},
+		{name: "a test flag's value is the flag", args: []string{"-test.run", "-test.timeout=3m"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			value, ok := lookupTestFlag(tc.args, "timeout")
@@ -361,12 +363,33 @@ func TestLookupTestFlag(t *testing.T) {
 }
 
 // TestPrebuiltAmbiguousTimeout runs a binary whose custom flag's value looks
-// like -test.timeout: otelgotest leaves it to the binary.
+// like -test.timeout: otelgotest leaves it to the binary, which keeps go
+// test's default timeout.
 func TestPrebuiltAmbiguousTimeout(t *testing.T) {
 	bin := buildPrebuilt(t)
-	out, code := runOtelgotest(t, hermeticEnv(), bin, "-test.run=^TestPass$", "-greeting", "-test.timeout=bogus")
+	out, code := runOtelgotest(t, hermeticEnv(), bin, "-test.run=^Test(Pass|Timeout)$", "-greeting", "-test.timeout=bogus")
 	assert.Equal(t, 0, code, out)
 	assert.Regexp(t, `(?m)^ok  \t`+regexp.QuoteMeta(prebuiltPkg)+`\t`, out)
+	assert.NotContains(t, out, "no timeout")
+}
+
+// TestPrebuiltFuzzAfterFlagValue fuzzes with -test.fuzz after a test flag
+// whose value is "--", which the binary parses as a value.
+func TestPrebuiltFuzzAfterFlagValue(t *testing.T) {
+	bin := buildPrebuilt(t)
+	out, code := runOtelgotest(t, hermeticEnv("GOCACHE="+t.TempDir()),
+		"-json", bin, "-test.skip", "--", "-test.run=^$", "-test.fuzz=^FuzzEcho$", "-test.fuzztime=5x")
+	assert.Equal(t, 0, code, out)
+	assert.Contains(t, out, "fuzz: elapsed")
+}
+
+// TestPrebuiltCoverDir runs a covered binary with the coverage directory go
+// test gives it, also as GOCOVERDIR for the covered programs tests run.
+func TestPrebuiltCoverDir(t *testing.T) {
+	bin := buildPrebuilt(t, "-cover")
+	out, code := runOtelgotest(t, hermeticEnv(), bin, "-test.run=^TestCoverDir$", "-test.v")
+	assert.Equal(t, 0, code, out)
+	assert.Contains(t, out, "GOCOVERDIR is set")
 }
 
 // TestPrebuiltFuzz fuzzes with a prebuilt binary, which needs the fuzz cache
