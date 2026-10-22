@@ -14,7 +14,7 @@ var (
 )
 
 func TestPass(t *testing.T) {
-	t.Log("passing output")
+	t.Log("passing output", Echo("x"))
 }
 
 func TestFail(t *testing.T) {
@@ -49,4 +49,11 @@ func TestExit(t *testing.T) {
 	if *exitCode != 0 {
 		os.Exit(*exitCode)
 	}
+}
+
+func FuzzEcho(f *testing.F) {
+	f.Add("a")
+	f.Fuzz(func(t *testing.T, s string) {
+		_ = Echo(s)
+	})
 }

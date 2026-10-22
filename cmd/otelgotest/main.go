@@ -15,12 +15,13 @@
 // otelgotest can also run a test binary built earlier with go test -c,
 // from the package's directory:
 //
-//	otelgotest [-json] ./mypackage.test -test.v -test.run TestFoo
+//	otelgotest [-json] [-p importpath] ./mypackage.test -test.v -test.run TestFoo
 //
 // It runs the binary as go test runs the binary it builds, with the same
-// events, spans and output. The flags after the binary are the binary's own
-// (-test.run, -test.timeout, ...); as with go test, -test.timeout defaults to
-// 10m.
+// events, spans and output. The binary's path must start with ./, ../ or /.
+// The flags after it are the binary's own (-test.run, -test.timeout, ...);
+// as with go test, -test.timeout defaults to 10m. The package is read from
+// the binary's build info unless -p gives it.
 //
 // Cross-process span context propagation is supported via a Unix
 // socket (OTEL_TEST_SOCKET). Test binaries using oteltestctx can

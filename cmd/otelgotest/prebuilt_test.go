@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -54,11 +55,18 @@ func TestMain(m *testing.M) {
 }
 
 // buildPrebuilt compiles the testdata package's test binary.
-func buildPrebuilt(t *testing.T) string {
+func buildPrebuilt(t *testing.T, flags ...string) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "prebuilt.test")
-	build := exec.Command("go", "test", "-c", "-o", bin, ".")
-	build.Dir = prebuiltDir
+	return buildTestBinary(t, prebuiltDir, ".", flags...)
+}
+
+// buildTestBinary compiles pkg's test binary with go test -c, in dir.
+func buildTestBinary(t *testing.T, dir, pkg string, flags ...string) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "pkg.test")
+	args := append([]string{"test", "-c", "-o", bin}, flags...)
+	build := exec.Command("go", append(args, pkg)...)
+	build.Dir = dir
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, "go test -c: %s", out)
 	return bin
@@ -207,6 +215,8 @@ func TestPrebuiltMatchesGoTest(t *testing.T) {
 	bin := buildPrebuilt(t)
 	for _, tc := range []struct {
 		name string
+		// go test -c flags the binary needs, if not the default build
+		build []string
 		// go test flags, and the test binary flags go test passes for them
 		goArgs, binArgs []string
 	}{
@@ -240,8 +250,18 @@ func TestPrebuiltMatchesGoTest(t *testing.T) {
 			goArgs:  []string{"-run=^TestPass$", ".", "-nosuchflag"},
 			binArgs: []string{"-test.run=^TestPass$", "-nosuchflag"},
 		},
+		{
+			name:    "cover",
+			build:   []string{"-cover"},
+			goArgs:  []string{"-cover", "-run=^TestPass$", "."},
+			binArgs: []string{"-test.run=^TestPass$"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			bin := bin
+			if tc.build != nil {
+				bin = buildPrebuilt(t, tc.build...)
+			}
 			// Without a telemetry endpoint, go test -json's events are go
 			// test's own: otelgotest runs go test directly.
 			goOut, goCode := runOtelgotest(t, hermeticEnv(), append([]string{"-json", "-count=1"}, tc.goArgs...)...)
@@ -280,10 +300,14 @@ func normalizeEvents(t *testing.T, stream string) []map[string]any {
 }
 
 func TestParsePrebuilt(t *testing.T) {
-	bin := filepath.Join(t.TempDir(), "pkg.test")
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "pkg.test")
 	require.NoError(t, os.WriteFile(bin, []byte("binary"), 0o755))
-	goFile := filepath.Join(t.TempDir(), "x_test.go")
+	goFile := filepath.Join(dir, "x_test.go")
 	require.NoError(t, os.WriteFile(goFile, []byte("package x"), 0o644))
+	// A file named like a package in the working directory.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "fmt"), []byte("not a binary"), 0o755))
+	t.Chdir(dir)
 
 	for _, tc := range []struct {
 		name string
@@ -292,7 +316,12 @@ func TestParsePrebuilt(t *testing.T) {
 	}{
 		{name: "binary", args: []string{bin, "-test.v", "-x"}, want: &prebuilt{binary: bin, args: []string{"-test.v", "-x"}}},
 		{name: "json", args: []string{"-json", bin}, want: &prebuilt{binary: bin, args: []string{}, json: true}},
-		{name: "package", args: []string{"./..."}},
+		{name: "relative", args: []string{"./pkg.test", "-test.v"}, want: &prebuilt{binary: "./pkg.test", args: []string{"-test.v"}}},
+		{name: "package", args: []string{"-p", "example.com/x", "-json", bin}, want: &prebuilt{binary: bin, args: []string{}, json: true, pkg: "example.com/x"}},
+		{name: "package equals", args: []string{"-p=example.com/x", bin}, want: &prebuilt{binary: bin, args: []string{}, pkg: "example.com/x"}},
+		{name: "import path", args: []string{"fmt"}},
+		{name: "go test -p", args: []string{"-p", "4", "./..."}},
+		{name: "pattern", args: []string{"./..."}},
 		{name: "flags first", args: []string{"-v", bin}},
 		{name: "directory", args: []string{t.TempDir()}},
 		{name: "go file", args: []string{goFile}},
@@ -308,15 +337,92 @@ func TestParsePrebuilt(t *testing.T) {
 }
 
 func TestLookupTestFlag(t *testing.T) {
-	args := []string{"-test.timeout=1m", "-test.run", "X", "--test.timeout", "2m", "-test.bench=", "--", "-test.timeout=3m"}
-	v, ok := lookupTestFlag(args, "timeout")
-	assert.True(t, ok)
-	assert.Equal(t, "2m", v)
-	v, ok = lookupTestFlag(args, "bench")
-	assert.True(t, ok)
-	assert.Empty(t, v)
-	_, ok = lookupTestFlag(args, "fuzz")
-	assert.False(t, ok)
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		value string
+		ok    bool
+	}{
+		{name: "last wins", args: []string{"-test.timeout=1m", "-test.run", "X", "--test.timeout", "2m"}, value: "2m", ok: true},
+		{name: "unset", args: []string{"-test.run=X"}},
+		{name: "empty", args: []string{"-test.timeout="}, value: "", ok: true},
+		{name: "after --", args: []string{"--", "-test.timeout=3m"}},
+		{name: "after a positional argument", args: []string{"-test.v", "arg", "-test.timeout=3m"}},
+		{name: "after a custom flag's value", args: []string{"-greeting", "hello", "-test.timeout=3m"}, value: "3m", ok: true},
+		{name: "after a custom flag", args: []string{"-update=true", "-test.timeout=3m"}, value: "3m", ok: true},
+		{name: "missing value", args: []string{"-test.timeout"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, ok := lookupTestFlag(tc.args, "timeout")
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.value, value)
+		})
+	}
+}
+
+// TestPrebuiltAmbiguousTimeout runs a binary whose custom flag's value looks
+// like -test.timeout: otelgotest leaves it to the binary.
+func TestPrebuiltAmbiguousTimeout(t *testing.T) {
+	bin := buildPrebuilt(t)
+	out, code := runOtelgotest(t, hermeticEnv(), bin, "-test.run=^TestPass$", "-greeting", "-test.timeout=bogus")
+	assert.Equal(t, 0, code, out)
+	assert.Regexp(t, `(?m)^ok  \t`+regexp.QuoteMeta(prebuiltPkg)+`\t`, out)
+}
+
+// TestPrebuiltFuzz fuzzes with a prebuilt binary, which needs the fuzz cache
+// directory go test passes.
+func TestPrebuiltFuzz(t *testing.T) {
+	bin := buildPrebuilt(t)
+	out, code := runOtelgotest(t, hermeticEnv("GOCACHE="+t.TempDir()),
+		"-json", bin, "-test.run=^$", "-test.fuzz=^FuzzEcho$", "-test.fuzztime=5x")
+	assert.Equal(t, 0, code, out)
+	assert.Contains(t, out, "fuzz: elapsed")
+	assert.NotContains(t, out, "fuzzcachedir")
+}
+
+// TestPrebuiltStdoutFails checks a failing stdout does not hang otelgotest.
+func TestPrebuiltStdoutFails(t *testing.T) {
+	full, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
+	if err != nil {
+		t.Skipf("no /dev/full: %v", err)
+	}
+	defer full.Close()
+	bin := buildPrebuilt(t)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, otelgotestBin, "-json", bin, "-test.v", "-test.run=^Test(Pass|Sub)$")
+	cmd.Dir = prebuiltDir
+	cmd.Env = hermeticEnv()
+	cmd.Stdout = full
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	require.NoError(t, ctx.Err(), "otelgotest hung: %s", stderr.String())
+	assert.NoError(t, err, stderr.String())
+}
+
+// TestPrebuiltAdoptsSpans runs a test binary using oteltestctx, which asks
+// otelgotest over OTEL_TEST_SOCKET for its test's span: spans the test
+// starts are children of otelgotest's span for it.
+func TestPrebuiltAdoptsSpans(t *testing.T) {
+	bin := buildTestBinary(t, ".", "./testdata/adopt")
+	otlp := startOTLPReceiver(t)
+	cmd := exec.Command(otelgotestBin, bin, "-test.run=^TestAdopt$")
+	cmd.Dir = "testdata/adopt"
+	cmd.Env = hermeticEnv(
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="+otlp.url,
+		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf",
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+
+	spans := otlp.ended(t)
+	inner, ok := spans["inner"]
+	require.True(t, ok, "no span for the subtest: %v", spans)
+	call, ok := spans["downstream-call"]
+	require.True(t, ok, "no span from inside the test: %v", spans)
+	assert.Equal(t, inner.GetTraceId(), call.GetTraceId())
+	assert.Equal(t, inner.GetSpanId(), call.GetParentSpanId())
 }
 
 // killTimeouts matches go test's backstop (cmd/go/internal/test).
