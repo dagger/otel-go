@@ -12,13 +12,23 @@
 // Unlike the old -exec approach (go test -exec otelgotest), this
 // preserves test caching.
 //
+// otelgotest can also run a test binary built earlier with go test -c,
+// from the package's directory:
+//
+//	otelgotest [-json] ./mypackage.test -test.v -test.run TestFoo
+//
+// It runs the binary as go test runs the binary it builds, with the same
+// events, spans and output. The flags after the binary are the binary's own
+// (-test.run, -test.timeout, ...); as with go test, -test.timeout defaults to
+// 10m.
+//
 // Cross-process span context propagation is supported via a Unix
 // socket (OTEL_TEST_SOCKET). Test binaries using oteltestctx can
 // connect to this socket to adopt the externally created span context,
 // making in-process operations children of the test span.
 //
 // If no OTLP endpoint is configured, go test is executed directly
-// with no overhead.
+// with no overhead, and a test binary's tests emit no spans.
 package main
 
 import (
@@ -37,6 +47,7 @@ import (
 	"github.com/dagger/otel-go/gotest"
 	otelgo "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 func main() {
@@ -45,20 +56,13 @@ func main() {
 
 func run() int {
 	args := os.Args[1:]
-
-	// Detect old -exec usage: go test -exec otelgotest passes
-	// a compiled .test binary as the first argument.
-	if len(args) > 0 && looksLikeExecMode(args[0]) {
-		fmt.Fprintf(os.Stderr, "otelgotest: it looks like you're using the old -exec mode.\n")
-		fmt.Fprintf(os.Stderr, "  otelgotest is now a go test wrapper. Use:\n")
-		fmt.Fprintf(os.Stderr, "    otelgotest ./...\n")
-		fmt.Fprintf(os.Stderr, "  instead of:\n")
-		fmt.Fprintf(os.Stderr, "    go test -exec otelgotest ./...\n")
-		return 1
-	}
+	bin, isPrebuilt := parsePrebuilt(args)
 
 	// If no OTLP endpoint, just run go test directly.
 	if !hasOTLPEndpoint() {
+		if isPrebuilt {
+			return runPrebuilt(context.Background(), bin, noop.NewTracerProvider(), nil, nil, os.Stdout)
+		}
 		return execGoTest(args)
 	}
 
@@ -74,9 +78,19 @@ func run() int {
 	registry := gotest.NewSpanContextRegistry()
 	defer registry.Close()
 
+	opts := []gotest.Option{
+		gotest.WithSpanContextRegistry(registry),
+	}
+	if lp := otel.LoggerProvider(ctx); lp != nil {
+		opts = append(opts, gotest.WithLoggerProvider(lp))
+	}
+
 	tmpDir, err := os.MkdirTemp("", "otelgotest")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "otelgotest: tmpdir: %v\n", err)
+		if isPrebuilt {
+			return runPrebuilt(ctx, bin, tp, opts, nil, os.Stdout)
+		}
 		return execGoTest(args)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
@@ -85,11 +99,18 @@ func run() int {
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "otelgotest: socket listen: %v\n", err)
+		if isPrebuilt {
+			return runPrebuilt(ctx, bin, tp, opts, nil, os.Stdout)
+		}
 		return execGoTest(args)
 	}
 	defer func() { _ = listener.Close() }()
 
 	go serveSpanContexts(listener, registry)
+
+	if isPrebuilt {
+		return runPrebuilt(ctx, bin, tp, opts, []string{"OTEL_TEST_SOCKET=" + socketPath}, os.Stdout)
+	}
 
 	// Build the go test -json command, forwarding all user args.
 	// If the user supplied a leading -C flag, it must stay before -json
@@ -114,9 +135,6 @@ func run() int {
 
 	// Process JSON events while preserving the user's requested output mode.
 	stream := io.Reader(jsonOut)
-	opts := []gotest.Option{
-		gotest.WithSpanContextRegistry(registry),
-	}
 	if hasJSONFlag(args) {
 		stream = io.TeeReader(jsonOut, os.Stdout)
 	} else {
@@ -124,9 +142,6 @@ func run() int {
 			gotest.WithOutput(os.Stdout),
 			gotest.WithVerbose(hasVerboseFlag(args)),
 		)
-	}
-	if lp := otel.LoggerProvider(ctx); lp != nil {
-		opts = append(opts, gotest.WithLoggerProvider(lp))
 	}
 	if err := gotest.Run(ctx, stream, tp, opts...); err != nil {
 		fmt.Fprintf(os.Stderr, "otelgotest: process events: %v\n", err)
@@ -200,12 +215,6 @@ func stripJSONFlag(args []string) []string {
 		}
 	}
 	return out
-}
-
-// looksLikeExecMode returns true if arg looks like a compiled test binary,
-// indicating the user is trying the old go test -exec usage.
-func looksLikeExecMode(arg string) bool {
-	return strings.HasSuffix(arg, ".test") || strings.Contains(arg, ".test ")
 }
 
 // serveSpanContexts accepts connections on the Unix socket and responds
