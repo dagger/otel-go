@@ -104,6 +104,24 @@ func TestPanic(t *testing.T){panic("panic detail")}
 			}
 		}
 	})
+	t.Run("package skip omits Test", func(t *testing.T) {
+		suite := binarySuite{Packages: []binaryPackage{{Package: "tagged", Skip: true}}}
+		data, _ := json.Marshal(suite)
+		write("manifest.json", string(data))
+		var out, errout bytes.Buffer
+		if code := runBinarySuite(filepath.Join(root, "manifest.json"), &out, &errout); code != 0 {
+			t.Fatal(code)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+			var event map[string]any
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := event["Test"]; ok {
+				t.Fatalf("package event has Test: %s", line)
+			}
+		}
+	})
 	t.Run("build error isolation", func(t *testing.T) {
 		suite := binarySuite{Packages: []binaryPackage{{Package: "broken", Error: "compile error"}, {Package: "good", Binary: "a.test", Dir: "a"}}, Args: []string{"-test.run=TestFixture"}}
 		data, _ := json.Marshal(suite)

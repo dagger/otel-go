@@ -132,7 +132,14 @@ func runBinarySuite(manifest string, stdout, stderr io.Writer) int {
 		wg.Go(func() {
 			for pkg := range jobs {
 				report := func(action, message string) {
-					_ = json.NewEncoder(output).Encode(gotest.TestEvent{Time: time.Now(), Action: action, Package: pkg.Package, Output: message})
+					// Match go test's package events: omit Test, rather than
+					// encode an empty test name. Some report consumers
+					// distinguish a missing field from an empty string.
+					event := map[string]any{"Time": time.Now(), "Action": action, "Package": pkg.Package}
+					if message != "" {
+						event["Output"] = message
+					}
+					_ = json.NewEncoder(output).Encode(event)
 				}
 				if pkg.Error != "" {
 					report("start", "")
