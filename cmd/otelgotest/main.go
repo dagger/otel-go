@@ -40,6 +40,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--run-test-binaries" {
+		os.Exit(runBinarySuite(os.Args[2], os.Stdout, os.Stderr))
+	}
 	os.Exit(run())
 }
 
@@ -58,7 +61,7 @@ func run() int {
 	}
 
 	// If no OTLP endpoint, just run go test directly.
-	if !hasOTLPEndpoint() {
+	if !hasOTLPEndpoint() && !binaryMode(args) {
 		return execGoTest(args)
 	}
 
@@ -94,9 +97,11 @@ func run() int {
 	// Build the go test -json command, forwarding all user args.
 	// If the user supplied a leading -C flag, it must stay before -json
 	// because the go command requires -C to be the first flag.
-	goTestArgs := buildGoTestArgs(args)
-
-	cmd := exec.Command("go", goTestArgs...)
+	cmd, err := testCommand(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "otelgotest:", err)
+		return 1
+	}
 	cmd.Env = append(os.Environ(), "OTEL_TEST_SOCKET="+socketPath)
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -142,6 +147,10 @@ func run() int {
 
 // execGoTest runs go test with no instrumentation.
 func execGoTest(args []string) int {
+	if binaryMode(args) {
+		fmt.Fprintln(os.Stderr, "otelgotest: cannot start prebuilt test runner")
+		return 1
+	}
 	goArgs := []string{"test"}
 	goArgs = append(goArgs, args...)
 	cmd := exec.Command("go", goArgs...)
