@@ -88,6 +88,22 @@ func TestPanic(t *testing.T){panic("panic detail")}
 			}
 		})
 	}
+	t.Run("go test compatibility", func(t *testing.T) {
+		suite := binarySuite{GoTestArgs: []string{"-run=TestFixture", "-count=1", "./a", "./b"}, Dir: root}
+		data, _ := json.Marshal(suite)
+		write("manifest.json", string(data))
+		var out, errout bytes.Buffer
+		t.Setenv("GOWORK", "off")
+		t.Setenv("GOFLAGS", "")
+		if code := runBinarySuite(filepath.Join(root, "manifest.json"), &out, &errout); code != 0 {
+			t.Fatalf("exit %d: %s", code, errout.String())
+		}
+		for _, pkg := range []string{"a", "b"} {
+			if !strings.Contains(out.String(), `"Action":"pass","Package":"example.com/suite/`+pkg+`"`) {
+				t.Fatal(out.String())
+			}
+		}
+	})
 	t.Run("build error isolation", func(t *testing.T) {
 		suite := binarySuite{Packages: []binaryPackage{{Package: "broken", Error: "compile error"}, {Package: "good", Binary: "a.test", Dir: "a"}}, Args: []string{"-test.run=TestFixture"}}
 		data, _ := json.Marshal(suite)
