@@ -24,6 +24,10 @@ type binarySuite struct {
 	Packages []binaryPackage
 	Args     []string
 	Parallel int
+	// GoTestArgs selects the ordinary go test path for options which require
+	// go-command orchestration, such as fuzzing or merged coverage profiles.
+	GoTestArgs []string
+	Dir        string
 }
 
 type binaryPackage struct {
@@ -83,6 +87,15 @@ func runBinarySuite(manifest string, stdout, stderr io.Writer) int {
 	if err := json.Unmarshal(data, &suite); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if suite.GoTestArgs != nil {
+		cmd := exec.Command("go", append([]string{"test", "-json"}, suite.GoTestArgs...)...)
+		cmd.Dir = suite.Dir
+		cmd.Stdout, cmd.Stderr = stdout, stderr
+		if err := cmd.Run(); err != nil {
+			return 1
+		}
+		return 0
 	}
 	if suite.Parallel < 0 {
 		fmt.Fprintln(stderr, "Parallel must not be negative")
