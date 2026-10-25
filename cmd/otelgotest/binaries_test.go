@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -146,5 +148,62 @@ func TestLineWriter(t *testing.T) {
 	}
 	if got, want := out.String(), "{\"a\":1}\n{\"b\":2}\n"; got != want {
 		t.Fatalf("%q != %q", got, want)
+	}
+}
+
+// A lazy tool build must finish before any package worker starts. The fake go
+// command refuses worker launches and records each resolution. A path with a
+// space also ensures the reported executable path is not split into arguments.
+func TestBinarySuiteResolvesToolBeforeWorkers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	root := t.TempDir()
+	tool := filepath.Join(root, "test2json tool")
+	script := `#!/bin/sh
+printf '{"Action":"pass","Package":"%s"}\n' "$3"
+`
+	if err := os.WriteFile(tool, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	goScript := `#!/bin/sh
+if [ "$1" != tool ] || [ "$2" != -n ] || [ "$3" != test2json ]; then
+ echo 'concurrent lazy tool launch: text file busy' >&2
+ exit 1
+fi
+printf 'resolve\n' >> "$RESOLUTION_LOG"
+printf '%s\n' "$TEST2JSON_PATH"
+`
+	if err := os.WriteFile(filepath.Join(root, "go"), []byte(goScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TEST2JSON_PATH", tool)
+	log := filepath.Join(root, "resolved")
+	t.Setenv("RESOLUTION_LOG", log)
+	suite := binarySuite{Parallel: 8}
+	for i := range 8 {
+		suite.Packages = append(suite.Packages, binaryPackage{Package: fmt.Sprintf("pkg%d", i), Binary: "unused", Dir: "."})
+	}
+	data, _ := json.Marshal(suite)
+	manifest := filepath.Join(root, "manifest.json")
+	if err := os.WriteFile(manifest, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errout bytes.Buffer
+	if code := runBinarySuite(manifest, &out, &errout); code != 0 {
+		t.Fatalf("exit %d: %s", code, &errout)
+	}
+	resolved, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(resolved) != "resolve\n" {
+		t.Fatalf("tool resolved more than once: %q", resolved)
+	}
+	for i := range 8 {
+		if !strings.Contains(out.String(), fmt.Sprintf(`"Package":"pkg%d"`, i)) {
+			t.Fatalf("missing package %d: %s", i, &out)
+		}
 	}
 }
