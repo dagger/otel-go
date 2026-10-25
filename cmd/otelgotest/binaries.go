@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,6 +124,28 @@ func runBinarySuite(manifest string, stdout, stderr io.Writer) int {
 		}
 		seen[pkg.Package] = true
 	}
+	// New Go toolchains build test2json on demand. Resolve it once before
+	// starting workers: concurrent go-tool launches can write and execute the
+	// same cached executable, causing ETXTBSY ("text file busy").
+	var test2json string
+	for _, pkg := range suite.Packages {
+		if pkg.Error != "" || pkg.Skip {
+			continue
+		}
+		cmd := exec.Command("go", "tool", "-n", "test2json")
+		cmd.Stderr = stderr
+		path, err := cmd.Output()
+		if err != nil {
+			fmt.Fprintln(stderr, "resolve test2json:", err)
+			return 1
+		}
+		test2json = strings.TrimSpace(string(path))
+		if test2json == "" {
+			fmt.Fprintln(stderr, "go tool returned an empty test2json path")
+			return 1
+		}
+		break
+	}
 	output := &recordWriter{Writer: stdout}
 	diagnostics := &recordWriter{Writer: stderr}
 	jobs := make(chan binaryPackage)
@@ -157,10 +180,10 @@ func runBinarySuite(manifest string, stdout, stderr io.Writer) int {
 				// test2json supplies package identity, subtests, failures and elapsed
 				// times. test.v=test2json prevents ordinary test output from forging
 				// testing control records. Go's default timeout is not the binary's.
-				args := []string{"tool", "test2json", "-t", "-p", pkg.Package, resolve(pkg.Binary), "-test.timeout=10m"}
+				args := []string{"-t", "-p", pkg.Package, resolve(pkg.Binary), "-test.timeout=10m"}
 				args = append(args, suite.Args...)
 				args = append(args, "-test.v=test2json")
-				cmd := exec.Command("go", args...)
+				cmd := exec.Command(test2json, args...)
 				cmd.Dir = resolve(pkg.Dir)
 				packageFinished := false
 				lines := &lineWriter{out: output, observe: func(line []byte) {
