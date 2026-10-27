@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -489,22 +490,39 @@ func Init(ctx context.Context, cfg Config) context.Context {
 // Close shuts down the global OpenTelemetry providers, flushing any remaining
 // data to the configured exporters.
 func Close() {
+	closeProviders(func(provider string, err error) {
+		slog.Error("failed to shut down "+provider+" provider", "error", err)
+	})
+}
+
+// CloseWithError shuts down the same providers as Close, returning their
+// combined errors instead of logging them. Use it when the logging pipeline
+// itself is being torn down and can no longer report shutdown failures.
+func CloseWithError() error {
+	var result error
+	closeProviders(func(provider string, err error) {
+		result = errors.Join(result, fmt.Errorf("failed to shut down %s provider: %w", provider, err))
+	})
+	return result
+}
+
+func closeProviders(report func(string, error)) {
 	ctx := closeCtx
 	flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	if tracerProvider != nil {
 		if err := tracerProvider.Shutdown(flushCtx); err != nil {
-			slog.Error("failed to shut down tracer provider", "error", err)
+			report("tracer", err)
 		}
 	}
 	if loggerProvider := LoggerProvider(ctx); loggerProvider != nil {
 		if err := loggerProvider.Shutdown(flushCtx); err != nil {
-			slog.Error("failed to shut down logger provider", "error", err)
+			report("logger", err)
 		}
 	}
 	if meterProvider := MeterProvider(ctx); meterProvider != nil {
 		if err := meterProvider.Shutdown(flushCtx); err != nil {
-			slog.Error("failed to shut down meter provider", "error", err)
+			report("meter", err)
 		}
 	}
 }
