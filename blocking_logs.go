@@ -47,7 +47,7 @@ type blockingLogProcessor struct {
 }
 
 func (p *blockingLogProcessor) OnEmit(ctx context.Context, record *sdklog.Record) error {
-	acquired, err := p.acquire(ctx)
+	acquired, err := p.acquireForEmit(ctx)
 	if !acquired {
 		return err
 	}
@@ -62,6 +62,30 @@ func (p *blockingLogProcessor) OnEmit(ctx context.Context, record *sdklog.Record
 	}
 	p.pending++
 	return nil
+}
+
+// Record emission should not be refused solely because its context ended.
+// Preserve immediate admission; only a caller that must wait for the gate or
+// a capacity flush can fail with cancellation. ForceFlush keeps its stricter
+// lifecycle deadline semantics through acquire.
+func (p *blockingLogProcessor) acquireForEmit(ctx context.Context) (bool, error) {
+	select {
+	case <-p.stopped:
+		return false, nil
+	default:
+	}
+	select {
+	case <-p.gate:
+		select {
+		case <-p.stopped:
+			p.release()
+			return false, nil
+		default:
+			return true, nil
+		}
+	default:
+		return p.acquire(ctx)
+	}
 }
 
 func (p *blockingLogProcessor) ForceFlush(ctx context.Context) error {

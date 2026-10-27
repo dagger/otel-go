@@ -115,6 +115,24 @@ func TestBlockingLogProcessorCanceledFlushKeepsAdmissionBound(t *testing.T) {
 	require.Equal(t, blockingLogQueueSize, p.(*blockingLogProcessor).pending, "failed flush must not admit more records")
 }
 
+func TestBlockingLogProcessorAcceptsCanceledContextWithCapacity(t *testing.T) {
+	e := &blockedLogCapture{started: make(chan struct{}), release: make(chan struct{})}
+	close(e.release)
+	p := NewBlockingLogProcessor(e)
+	t.Cleanup(func() { require.NoError(t, p.Shutdown(context.Background())) })
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, body := range []string{"before cancellation", "cleanup output", ""} {
+		r := blockingTestRecord(body)
+		require.NoError(t, p.OnEmit(ctx, &r), "cancellation alone must not discard an available record")
+	}
+	require.ErrorIs(t, p.ForceFlush(ctx), context.Canceled, "explicit flush still honors its context")
+	require.NoError(t, p.ForceFlush(t.Context()))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	require.Equal(t, []string{"before cancellation", "cleanup output", ""}, e.bodies)
+}
+
 func TestInitWithCustomLogProcessor(t *testing.T) {
 	e := &blockedLogCapture{started: make(chan struct{}), release: make(chan struct{})}
 	close(e.release)
