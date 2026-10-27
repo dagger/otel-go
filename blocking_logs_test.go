@@ -132,3 +132,75 @@ func TestInitWithCustomLogProcessor(t *testing.T) {
 	defer e.mu.Unlock()
 	require.Contains(t, e.bodies, "complete output")
 }
+
+func TestBlockingLogProcessorWaitHonorsCancellation(t *testing.T) {
+	e := &blockedLogCapture{started: make(chan struct{}), release: make(chan struct{})}
+	close(e.release)
+	p := NewBlockingLogProcessor(e).(*blockingLogProcessor)
+	t.Cleanup(func() { require.NoError(t, p.Shutdown(context.Background())) })
+	acquired, err := p.acquire(t.Context())
+	require.NoError(t, err)
+	require.True(t, acquired)
+	defer p.release()
+	for _, operation := range []string{"emit", "flush"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				if operation == "emit" {
+					r := blockingTestRecord("waiting")
+					done <- p.OnEmit(ctx, &r)
+				} else {
+					done <- p.ForceFlush(ctx)
+				}
+			}()
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+			case <-time.After(time.Second):
+				t.Fatal("waiting for admission ignored the context deadline")
+			}
+		})
+	}
+}
+
+func TestBlockingLogProcessorShutdownInterruptsAdmissionFlush(t *testing.T) {
+	e := &blockedLogCapture{started: make(chan struct{}), release: make(chan struct{})}
+	p := NewBlockingLogProcessor(e)
+	t.Cleanup(func() { close(e.release); _ = p.Shutdown(context.Background()) })
+	r := blockingTestRecord("output")
+	for range blockingLogQueueSize {
+		require.NoError(t, p.OnEmit(t.Context(), &r))
+	}
+	select {
+	case <-e.started:
+	case <-time.After(time.Second):
+		t.Fatal("export did not start")
+	}
+	emitted := make(chan error, 1)
+	go func() { emitted <- p.OnEmit(context.Background(), &r) }()
+	select {
+	case err := <-emitted:
+		t.Fatalf("admission did not wait for the blocked exporter: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- p.Shutdown(ctx) }()
+	select {
+	case err := <-shutdown:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(time.Second):
+		t.Fatal("shutdown waited for admission despite its deadline")
+	}
+	select {
+	case err := <-emitted:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not interrupt the active admission flush")
+	}
+	require.NoError(t, p.OnEmit(context.Background(), &r), "shutdown releases future emitters")
+	require.NoError(t, p.ForceFlush(context.Background()))
+}
