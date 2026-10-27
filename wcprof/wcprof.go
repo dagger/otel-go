@@ -7,7 +7,10 @@
 // It writes ordinary OTel spans and links under wcprof's reporting
 // contract. A program inside a container exec or a Dagger module reports to
 // the engine through the OTel exporter it already has, so the spans need no
-// other setup. When the program is done, it calls Producer.Complete, and
+// other setup. Each dependency is a link on the dependent task's span, so a
+// tracer provider set up some other way than otel-go's Init needs
+// otel.SpanLimits' link limit, or a task's dependencies beyond the SDK's
+// default of 128 are dropped. When the program is done, it calls Producer.Complete, and
 // then flushes its exporter as usual, so a reader can tell a complete report
 // from a partial one.
 package wcprof

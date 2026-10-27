@@ -420,6 +420,7 @@ func Init(ctx context.Context, cfg Config) context.Context {
 
 	traceOpts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(cfg.Resource),
+		sdktrace.WithRawSpanLimits(SpanLimits()),
 	}
 
 	SpanProcessors = cfg.SpanProcessors
@@ -500,4 +501,15 @@ func Close() {
 			slog.Error("failed to shut down meter provider", "error", err)
 		}
 	}
+}
+
+// SpanLimits are the span limits of the tracer provider Init sets up: the
+// SDK's defaults, but with room for as many links as the engine allows on its
+// own spans, since a span's wait links (one per dependency, see the wcprof
+// package) can number in the thousands and the SDK otherwise keeps only the
+// last 128.
+func SpanLimits() sdktrace.SpanLimits {
+	limits := sdktrace.NewSpanLimits()
+	limits.LinkCountLimit = 16384
+	return limits
 }

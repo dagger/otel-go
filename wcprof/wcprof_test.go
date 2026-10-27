@@ -132,3 +132,31 @@ func TestReportsUnderTheContract(t *testing.T) {
 		}
 	}
 }
+
+// A task's dependencies are all kept with otel-go's span limits, beyond the
+// SDK's default of 128 links per span.
+func TestManyDependenciesKept(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithRawSpanLimits(telemetry.SpanLimits()), sdktrace.WithSpanProcessor(sr))
+	p := NewProducer(tp.Tracer("test"), "gobuild-1")
+	ctx, walk := p.TaskGroup(context.Background(), "walk")
+	_, link := p.Task(ctx, "link", "example.com/cmd")
+	now := time.Now()
+	const n = 200
+	for i := range n {
+		_, dep := p.Task(ctx, "package", "example.com/p"+strconv.Itoa(i))
+		dep.End()
+		link.DependsOn(dep, now, now)
+	}
+	link.End()
+	walk.End()
+	for _, s := range sr.Ended() {
+		if s.Name() == "link" {
+			if got := len(s.Links()); got != n || s.DroppedLinks() != 0 {
+				t.Errorf("link task kept %d of %d dependencies (%d dropped)", got, n, s.DroppedLinks())
+			}
+			return
+		}
+	}
+	t.Fatal("no link task")
+}
