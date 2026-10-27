@@ -294,6 +294,9 @@ type Config struct {
 	// Example: Honeycomb, Jaeger, etc.
 	BatchedTraceExporters []sdktrace.SpanExporter
 
+	// LogProcessors are processors to prepend to the logging pipeline.
+	LogProcessors []sdklog.Processor
+
 	// LiveLogExporters are exporters that receive logs in batches of ~100ms.
 	LiveLogExporters []sdklog.Exporter
 
@@ -446,9 +449,13 @@ func Init(ctx context.Context, cfg Config) context.Context {
 	otel.SetTracerProvider(tracerProvider)
 
 	// Set up a log provider if configured.
-	if len(cfg.LiveLogExporters) > 0 {
+	if len(cfg.LogProcessors) > 0 || len(cfg.LiveLogExporters) > 0 {
 		logOpts := []sdklog.LoggerProviderOption{
 			sdklog.WithResource(cfg.Resource),
+		}
+		LogProcessors = append(LogProcessors, cfg.LogProcessors...)
+		for _, processor := range cfg.LogProcessors {
+			logOpts = append(logOpts, sdklog.WithProcessor(processor))
 		}
 		for _, exp := range cfg.LiveLogExporters {
 			processor := sdklog.NewBatchProcessor(exp,
