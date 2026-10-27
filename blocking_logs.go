@@ -13,14 +13,21 @@ const blockingLogQueueSize = 2048
 // the exporter falls behind. Emitters wait for capacity instead. Use it for
 // local consumers such as a CLI frontend, where logs carry command output.
 // Export failures and cancellation are still reported by the underlying SDK.
+// Exporters and error handlers must route their own diagnostics separately;
+// synchronously emitting into this processor from an export can deadlock.
 func NewBlockingLogProcessor(exporter sdklog.Exporter) sdklog.Processor {
 	flushCtx, cancelFlush := context.WithCancel(context.Background())
-	p := &blockingLogProcessor{BatchProcessor: sdklog.NewBatchProcessor(exporter,
-		sdklog.WithMaxQueueSize(blockingLogQueueSize),
-		sdklog.WithExportMaxBatchSize(512),
-		sdklog.WithExportInterval(NearlyImmediate),
-	), gate: make(chan struct{}, 1), stopped: make(chan struct{}),
-		flushCtx: flushCtx, cancelFlush: cancelFlush}
+	p := &blockingLogProcessor{
+		BatchProcessor: sdklog.NewBatchProcessor(exporter,
+			sdklog.WithMaxQueueSize(blockingLogQueueSize),
+			sdklog.WithExportMaxBatchSize(512),
+			sdklog.WithExportInterval(NearlyImmediate),
+		),
+		gate:        make(chan struct{}, 1),
+		stopped:     make(chan struct{}),
+		flushCtx:    flushCtx,
+		cancelFlush: cancelFlush,
+	}
 	p.gate <- struct{}{}
 	return p
 }
