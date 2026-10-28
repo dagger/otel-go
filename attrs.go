@@ -98,6 +98,10 @@ const (
 	LinkPurposeCause = "cause"
 	// The linked span is the origin of the error bubbled up by the current span.
 	LinkPurposeErrorOrigin = "error_origin"
+	// The current span waited on the linked span; Dagger's wall-clock
+	// profiler (wcprof) reads the wait's interval and reason from the link's
+	// attributes. See the wcprof package.
+	LinkPurposeWait = "wait"
 
 	// NB: the following attributes are not currently used.
 
