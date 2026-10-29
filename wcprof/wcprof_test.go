@@ -65,10 +65,19 @@ func TestReportsUnderTheContract(t *testing.T) {
 		if a[WorkTypeAttr].AsString() != "engine" {
 			t.Errorf("span %q work type %q", s.Name(), a[WorkTypeAttr].AsString())
 		}
-		if !a[telemetry.UIInternalAttr].AsBool() {
-			t.Errorf("span %q isn't marked internal, so it would show in the UI", s.Name())
-		}
 		k := a[OpKindAttr].AsString()
+		switch k {
+		case "task", "task_group":
+			// Passthrough, never internal: the UI drops an internal span's
+			// subtree, which would hide the program's work under it.
+			if !a[telemetry.UIPassthroughAttr].AsBool() || a[telemetry.UIInternalAttr].AsBool() {
+				t.Errorf("%s %q isn't passthrough alone, so the work under it wouldn't show", k, s.Name())
+			}
+		default:
+			if !a[telemetry.UIInternalAttr].AsBool() {
+				t.Errorf("span %q isn't marked internal, so it would show in the UI", s.Name())
+			}
+		}
 		byKind[k] = append(byKind[k], s)
 	}
 	if len(byKind["task_group"]) != 1 || len(byKind["task"]) != 2 || len(byKind["resource"]) != 1 || len(byKind["acquire"]) != 2 {
