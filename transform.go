@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -24,8 +25,122 @@ import (
 	otlptracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
+// SnapshotSpan returns a copy of span's current state that later changes to
+// span don't affect.
 func SnapshotSpan(span sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
-	return SpansFromPB(SpansToPB([]sdktrace.ReadOnlySpan{span}))[0]
+	return &spanSnapshot{
+		name:        span.Name(),
+		spanContext: span.SpanContext(),
+		parent:      span.Parent(),
+		spanKind:    span.SpanKind(),
+		startTime:   span.StartTime(),
+		endTime:     span.EndTime(),
+		// A live span's Attributes returns its own slice, which it deduplicates
+		// in place.
+		attributes:           slices.Clone(span.Attributes()),
+		links:                span.Links(),
+		events:               span.Events(),
+		status:               span.Status(),
+		instrumentationScope: span.InstrumentationScope(),
+		resource:             span.Resource(),
+		droppedAttributes:    span.DroppedAttributes(),
+		droppedLinks:         span.DroppedLinks(),
+		droppedEvents:        span.DroppedEvents(),
+		childSpanCount:       span.ChildSpanCount(),
+	}
+}
+
+type spanSnapshot struct {
+	// Embed the interface to implement the private method.
+	sdktrace.ReadOnlySpan
+
+	name                 string
+	spanContext          trace.SpanContext
+	parent               trace.SpanContext
+	spanKind             trace.SpanKind
+	startTime            time.Time
+	endTime              time.Time
+	attributes           []attribute.KeyValue
+	links                []sdktrace.Link
+	events               []sdktrace.Event
+	status               sdktrace.Status
+	instrumentationScope instrumentation.Scope
+	resource             *resource.Resource
+	droppedAttributes    int
+	droppedLinks         int
+	droppedEvents        int
+	childSpanCount       int
+}
+
+var _ sdktrace.ReadOnlySpan = &spanSnapshot{}
+
+func (s *spanSnapshot) Name() string {
+	return s.name
+}
+
+func (s *spanSnapshot) SpanContext() trace.SpanContext {
+	return s.spanContext
+}
+
+func (s *spanSnapshot) Parent() trace.SpanContext {
+	return s.parent
+}
+
+func (s *spanSnapshot) SpanKind() trace.SpanKind {
+	return s.spanKind
+}
+
+func (s *spanSnapshot) StartTime() time.Time {
+	return s.startTime
+}
+
+func (s *spanSnapshot) EndTime() time.Time {
+	return s.endTime
+}
+
+func (s *spanSnapshot) Attributes() []attribute.KeyValue {
+	return s.attributes
+}
+
+func (s *spanSnapshot) Links() []sdktrace.Link {
+	return s.links
+}
+
+func (s *spanSnapshot) Events() []sdktrace.Event {
+	return s.events
+}
+
+func (s *spanSnapshot) Status() sdktrace.Status {
+	return s.status
+}
+
+func (s *spanSnapshot) InstrumentationScope() instrumentation.Scope {
+	return s.instrumentationScope
+}
+
+// Deprecated: use InstrumentationScope.
+func (s *spanSnapshot) InstrumentationLibrary() instrumentation.Library {
+	return s.instrumentationScope
+}
+
+func (s *spanSnapshot) Resource() *resource.Resource {
+	return s.resource
+}
+
+func (s *spanSnapshot) DroppedAttributes() int {
+	return s.droppedAttributes
+}
+
+func (s *spanSnapshot) DroppedLinks() int {
+	return s.droppedLinks
+}
+
+func (s *spanSnapshot) DroppedEvents() int {
+	return s.droppedEvents
+}
+
+func (s *spanSnapshot) ChildSpanCount() int {
+	return s.childSpanCount
 }
 
 func LogsToPB(sdl []sdklog.Record) []*otlplogsv1.ResourceLogs {
