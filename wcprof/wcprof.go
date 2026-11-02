@@ -86,10 +86,19 @@ func NewProducer(tracer trace.Tracer, id string) *Producer {
 	return &Producer{tracer: tracer, id: id}
 }
 
+// start starts a reported span. A task or task group is passthrough: the
+// UI skips it and shows the program's work under it, its engine calls and
+// their output, in its place. Marked internal instead, it would hide that
+// work, since the UI drops an internal span's whole subtree. Resources and
+// acquisitions have nothing under them, so they're internal.
 func (p *Producer) start(ctx context.Context, name, kind string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
 	p.spans.Add(1)
+	visibility := telemetry.Internal()
+	if kind == kindTask || kind == kindTaskGroup {
+		visibility = telemetry.Passthrough()
+	}
 	return p.tracer.Start(ctx, name,
-		telemetry.Internal(),
+		visibility,
 		trace.WithAttributes(
 			attribute.String(OpKindAttr, kind),
 			attribute.String(WorkTypeAttr, "engine"),
