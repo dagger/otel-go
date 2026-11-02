@@ -9,6 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/sdk/instrumentation"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -118,4 +121,48 @@ func TestLiveSpanProcessorExportsStartAndEnd(t *testing.T) {
 	assert.Equal(t, spans[0].SpanContext, spans[1].SpanContext)
 	assert.False(t, spans[1].EndTime.Before(spans[1].StartTime))
 	assert.Contains(t, spans[1].Attributes, attribute.Bool("finished", true))
+}
+
+func TestSnapshotSpan(t *testing.T) {
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", "test"))),
+	)
+	t.Cleanup(func() {
+		require.NoError(t, provider.Shutdown(context.Background()))
+	})
+
+	parent := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1},
+		SpanID:     trace.SpanID{2},
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	linked := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{3},
+		SpanID:  trace.SpanID{4},
+	})
+	ctx := trace.ContextWithRemoteSpanContext(t.Context(), parent)
+	_, span := provider.Tracer("test", trace.WithInstrumentationVersion("v1")).Start(ctx, "live",
+		trace.WithSpanKind(trace.SpanKindClient),
+		// A repeated key leaves room in the span's attribute slice, which a
+		// later change then reuses in place.
+		trace.WithAttributes(attribute.String("key", "first"), attribute.String("key", "start")),
+		trace.WithLinks(trace.Link{SpanContext: linked, Attributes: []attribute.KeyValue{attribute.Int("link", 1)}}),
+	)
+	span.AddEvent("started")
+	live := span.(sdktrace.ReadOnlySpan)
+
+	want := tracetest.SpanStubFromReadOnlySpan(live)
+	want.Attributes = []attribute.KeyValue{attribute.String("key", "start")}
+	snapshot := otel.SnapshotSpan(live)
+	assert.Equal(t, want, tracetest.SpanStubFromReadOnlySpan(snapshot))
+	assert.Equal(t, instrumentation.Scope{Name: "test", Version: "v1"}, snapshot.InstrumentationScope())
+	assert.True(t, snapshot.Parent().IsRemote())
+
+	span.SetAttributes(attribute.String("key", "changed"))
+	span.AddEvent("later")
+	span.SetStatus(codes.Error, "failed")
+	span.End()
+	assert.Equal(t, []attribute.KeyValue{attribute.String("key", "changed")}, live.Attributes())
+	assert.Equal(t, want, tracetest.SpanStubFromReadOnlySpan(snapshot))
 }
