@@ -211,8 +211,9 @@ func InstrumentationScopeToPB(il instrumentation.Scope) *otlpcommonv1.Instrument
 		return nil
 	}
 	return &otlpcommonv1.InstrumentationScope{
-		Name:    il.Name,
-		Version: il.Version,
+		Name:       il.Name,
+		Version:    il.Version,
+		Attributes: iterator(il.Attributes.Iter()),
 	}
 }
 
@@ -992,7 +993,7 @@ func attrValue(v *otlpcommonv1.AnyValue) attribute.Value {
 }
 
 func LogValueFromPB(v *otlpcommonv1.AnyValue) log.Value {
-	if v == nil {
+	if v.GetValue() == nil {
 		return log.StringValue("")
 	}
 	switch x := v.Value.(type) {
@@ -1028,6 +1029,8 @@ func LogValueFromPB(v *otlpcommonv1.AnyValue) log.Value {
 func LogValueToPB(v log.Value) *otlpcommonv1.AnyValue {
 	av := new(otlpcommonv1.AnyValue)
 	switch v.Kind() {
+	case log.KindEmpty:
+		// An empty value, as OpenTelemetry's exporters send it.
 	case log.KindBool:
 		av.Value = &otlpcommonv1.AnyValue_BoolValue{
 			BoolValue: v.AsBool(),
@@ -1205,8 +1208,9 @@ func ScopeMetricsToPB(sms []metricdata.ScopeMetrics) ([]*otlpmetricsv1.ScopeMetr
 
 		out = append(out, &otlpmetricsv1.ScopeMetrics{
 			Scope: &otlpcommonv1.InstrumentationScope{
-				Name:    sm.Scope.Name,
-				Version: sm.Scope.Version,
+				Name:       sm.Scope.Name,
+				Version:    sm.Scope.Version,
+				Attributes: iterator(sm.Scope.Attributes.Iter()),
 			},
 			Metrics:   ms,
 			SchemaUrl: sm.Scope.SchemaURL,

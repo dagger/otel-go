@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -85,7 +86,8 @@ func TestOTLPHTTPSendsWhatOpenTelemetrySends(t *testing.T) {
 			sdktrace.WithResource(testResource),
 			sdktrace.WithSyncer(oursExp),
 			sdktrace.WithSyncer(theirsExp))
-		_, span := tp.Tracer("test", trace.WithInstrumentationVersion("v1")).Start(ctx, "a span",
+		_, span := tp.Tracer("test", trace.WithInstrumentationVersion("v1"),
+			trace.WithInstrumentationAttributes(attribute.String("scope", "attr"))).Start(ctx, "a span",
 			trace.WithAttributes(attribute.Int("n", 1)))
 		span.AddEvent("an event")
 		span.End()
@@ -124,10 +126,13 @@ func TestOTLPHTTPSendsWhatOpenTelemetrySends(t *testing.T) {
 		rec.SetSeverityText("WARN")
 		rec.SetBody(log.StringValue("hello"))
 		rec.AddAttributes(log.String("k", "v"), log.Map("m", log.Int("i", 1)))
-		lp.Logger("test", log.WithInstrumentationVersion("v1")).Emit(spanCtx, rec)
-		var noSpan log.Record
-		noSpan.SetBody(log.StringValue("no span"))
-		lp.Logger("test", log.WithInstrumentationVersion("v1")).Emit(ctx, noSpan)
+		logger := lp.Logger("test", log.WithInstrumentationVersion("v1"),
+			log.WithInstrumentationAttributes(attribute.String("scope", "attr")))
+		logger.Emit(spanCtx, rec)
+		// no span, no body, and an attribute with an empty value
+		var bare log.Record
+		bare.AddAttributes(log.KeyValue{Key: "empty"}, log.String("k", "v"))
+		logger.Emit(ctx, bare)
 		require.NoError(t, lp.Shutdown(ctx))
 
 		var got, want collogspb.ExportLogsServiceRequest
@@ -150,6 +155,9 @@ func TestOTLPHTTPSendsWhatOpenTelemetrySends(t *testing.T) {
 		first := gotRecs[0].(*collogspb.ExportLogsServiceRequest).GetResourceLogs()[0].GetScopeLogs()[0].GetLogRecords()[0]
 		require.Equal(t, "hello", first.GetBody().GetStringValue())
 		require.NotZero(t, first.GetObservedTimeUnixNano())
+		barePB := gotRecs[1].(*collogspb.ExportLogsServiceRequest).GetResourceLogs()[0].GetScopeLogs()[0].GetLogRecords()[0]
+		require.Nil(t, barePB.GetBody().GetValue())
+		require.Equal(t, log.StringValue(""), otel.LogValueFromPB(barePB.GetBody()))
 	})
 
 	t.Run("metrics", func(t *testing.T) {
@@ -162,7 +170,7 @@ func TestOTLPHTTPSendsWhatOpenTelemetrySends(t *testing.T) {
 
 		reader := sdkmetric.NewManualReader()
 		mp := sdkmetric.NewMeterProvider(sdkmetric.WithResource(testResource), sdkmetric.WithReader(reader))
-		meter := mp.Meter("test")
+		meter := mp.Meter("test", metric.WithInstrumentationAttributes(attribute.String("scope", "attr")))
 		counter, err := meter.Int64Counter("a.counter")
 		require.NoError(t, err)
 		counter.Add(ctx, 3)
