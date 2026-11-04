@@ -10,7 +10,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
-	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	otlpcommonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	otlplogsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
 	otlptracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -92,25 +91,23 @@ func TestSpansFromPBNilResource(t *testing.T) {
 func TestReexportLogsFromPBNilResourceAndBody(t *testing.T) {
 	exp := &collectExporter{}
 
-	err := otel.ReexportLogsFromPB(context.Background(), exp, &collogspb.ExportLogsServiceRequest{
-		ResourceLogs: []*otlplogsv1.ResourceLogs{
-			{
-				Resource: nil,
-				ScopeLogs: []*otlplogsv1.ScopeLogs{
-					{
-						Scope: &otlpcommonv1.InstrumentationScope{Name: "test"},
-						LogRecords: []*otlplogsv1.LogRecord{
-							{
-								Body: nil,
-								Attributes: []*otlpcommonv1.KeyValue{
-									{
-										Key:   "foo",
-										Value: &otlpcommonv1.AnyValue{Value: &otlpcommonv1.AnyValue_StringValue{StringValue: "bar"}},
-									},
-									{
-										Key:   "count",
-										Value: &otlpcommonv1.AnyValue{Value: &otlpcommonv1.AnyValue_IntValue{IntValue: 3}},
-									},
+	err := otel.ReexportLogsFromPB(context.Background(), exp, []*otlplogsv1.ResourceLogs{
+		{
+			Resource: nil,
+			ScopeLogs: []*otlplogsv1.ScopeLogs{
+				{
+					Scope: &otlpcommonv1.InstrumentationScope{Name: "test"},
+					LogRecords: []*otlplogsv1.LogRecord{
+						{
+							Body: nil,
+							Attributes: []*otlpcommonv1.KeyValue{
+								{
+									Key:   "foo",
+									Value: &otlpcommonv1.AnyValue{Value: &otlpcommonv1.AnyValue_StringValue{StringValue: "bar"}},
+								},
+								{
+									Key:   "count",
+									Value: &otlpcommonv1.AnyValue{Value: &otlpcommonv1.AnyValue_IntValue{IntValue: 3}},
 								},
 							},
 						},

@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
-	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	otlpcommonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	otlplogsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
 	otlpmetricsv1 "go.opentelemetry.io/proto/otlp/metrics/v1"
@@ -212,8 +211,9 @@ func InstrumentationScopeToPB(il instrumentation.Scope) *otlpcommonv1.Instrument
 		return nil
 	}
 	return &otlpcommonv1.InstrumentationScope{
-		Name:    il.Name,
-		Version: il.Version,
+		Name:       il.Name,
+		Version:    il.Version,
+		Attributes: iterator(il.Attributes.Iter()),
 	}
 }
 
@@ -228,17 +228,22 @@ func logRecord(l sdklog.Record) *otlplogsv1.LogRecord {
 		return true
 	})
 
-	tid, sid := l.TraceID(), l.SpanID()
 	s := &otlplogsv1.LogRecord{
-		TimeUnixNano:   uint64(l.Timestamp().UnixNano()),
-		SeverityNumber: otlplogsv1.SeverityNumber(l.Severity()),
-		SeverityText:   l.SeverityText(),
-		Body:           LogValueToPB(l.Body()),
-		Attributes:     attrs,
+		TimeUnixNano:         timeUnixNano(l.Timestamp()),
+		ObservedTimeUnixNano: timeUnixNano(l.ObservedTimestamp()),
+		EventName:            l.EventName(),
+		SeverityNumber:       otlplogsv1.SeverityNumber(l.Severity()),
+		SeverityText:         l.SeverityText(),
+		Body:                 LogValueToPB(l.Body()),
+		Attributes:           attrs,
 		// DroppedAttributesCount: 0,
-		// Flags: 0,
-		TraceId: tid[:],
-		SpanId:  sid[:],
+		Flags: uint32(l.TraceFlags()),
+	}
+	if tid := l.TraceID(); tid.IsValid() {
+		s.TraceId = tid[:]
+	}
+	if sid := l.SpanID(); sid.IsValid() {
+		s.SpanId = sid[:]
 	}
 
 	return s
@@ -988,7 +993,7 @@ func attrValue(v *otlpcommonv1.AnyValue) attribute.Value {
 }
 
 func LogValueFromPB(v *otlpcommonv1.AnyValue) log.Value {
-	if v == nil {
+	if v.GetValue() == nil {
 		return log.StringValue("")
 	}
 	switch x := v.Value.(type) {
@@ -1024,6 +1029,8 @@ func LogValueFromPB(v *otlpcommonv1.AnyValue) log.Value {
 func LogValueToPB(v log.Value) *otlpcommonv1.AnyValue {
 	av := new(otlpcommonv1.AnyValue)
 	switch v.Kind() {
+	case log.KindEmpty:
+		// An empty value, as OpenTelemetry's exporters send it.
 	case log.KindBool:
 		av.Value = &otlpcommonv1.AnyValue_BoolValue{
 			BoolValue: v.AsBool(),
@@ -1071,10 +1078,12 @@ func LogValueToPB(v log.Value) *otlpcommonv1.AnyValue {
 	return av
 }
 
-func ReexportLogsFromPB(ctx context.Context, exp sdklog.Exporter, req *collogspb.ExportLogsServiceRequest) error {
+// ReexportLogsFromPB exports the logs of an OTLP logs request's resources,
+// such as an ExportLogsServiceRequest's GetResourceLogs(), to exp.
+func ReexportLogsFromPB(ctx context.Context, exp sdklog.Exporter, resourceLogs []*otlplogsv1.ResourceLogs) error {
 	processor := &collectLogProcessor{}
 
-	for _, rl := range req.GetResourceLogs() {
+	for _, rl := range resourceLogs {
 		resource := ResourceFromPB(rl.GetSchemaUrl(), rl.GetResource())
 
 		provider := sdklog.NewLoggerProvider(
@@ -1199,8 +1208,9 @@ func ScopeMetricsToPB(sms []metricdata.ScopeMetrics) ([]*otlpmetricsv1.ScopeMetr
 
 		out = append(out, &otlpmetricsv1.ScopeMetrics{
 			Scope: &otlpcommonv1.InstrumentationScope{
-				Name:    sm.Scope.Name,
-				Version: sm.Scope.Version,
+				Name:       sm.Scope.Name,
+				Version:    sm.Scope.Version,
+				Attributes: iterator(sm.Scope.Attributes.Iter()),
 			},
 			Metrics:   ms,
 			SchemaUrl: sm.Scope.SchemaURL,

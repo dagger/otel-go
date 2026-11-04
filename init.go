@@ -2,9 +2,7 @@ package otel
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -12,20 +10,45 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
-	"google.golang.org/grpc"
 )
+
+// OTLP builds the exporters that ConfiguredSpanExporter,
+// ConfiguredLogExporter and ConfiguredMetricExporter configure from OTEL_*
+// variables.
+//
+// The default speaks only http/protobuf, the protocol the engine gives the
+// containers it runs, and links no gRPC: OpenTelemetry's own HTTP exporters
+// link it too, and it's most of what a program importing this package would
+// otherwise compile. Programs that send to other collectors, over grpc or with
+// OpenTelemetry's TLS, compression and retry settings, import
+// github.com/dagger/otel-go/otlp, which sets OTLP to OpenTelemetry's
+// exporters.
+var OTLP OTLPExporters = otlpHTTPExporters{}
+
+// OTLPExporters builds OTLP exporters for a protocol ("http/protobuf", "http"
+// or "grpc") and an endpoint URL. headers come from OTEL_EXPORTER_OTLP_HEADERS.
+type OTLPExporters interface {
+	SpanExporter(ctx context.Context, proto, endpoint string, headers map[string]string) (sdktrace.SpanExporter, error)
+	LogExporter(ctx context.Context, proto, endpoint string, headers map[string]string) (sdklog.Exporter, error)
+	MetricExporter(ctx context.Context, proto, endpoint string, headers map[string]string) (sdkmetric.Exporter, error)
+}
+
+func otlpHeaders() map[string]string {
+	headers := map[string]string{}
+	if hs := os.Getenv("OTEL_EXPORTER_OTLP_HEADERS"); hs != "" {
+		for _, header := range strings.Split(hs, ",") {
+			name, value, _ := strings.Cut(header, "=")
+			headers[name] = value
+		}
+	}
+	return headers
+}
 
 var (
 	configuredSpanExporter     sdktrace.SpanExporter
@@ -68,41 +91,7 @@ func ConfiguredSpanExporter(ctx context.Context) (sdktrace.SpanExporter, bool) {
 			return
 		}
 
-		//nolint:dupl
-		switch proto {
-		case "http/protobuf", "http":
-			headers := map[string]string{}
-			if hs := os.Getenv("OTEL_EXPORTER_OTLP_HEADERS"); hs != "" {
-				for _, header := range strings.Split(hs, ",") {
-					name, value, _ := strings.Cut(header, "=")
-					headers[name] = value
-				}
-			}
-			configuredSpanExporter, err = otlptracehttp.New(ctx,
-				otlptracehttp.WithEndpointURL(endpoint),
-				otlptracehttp.WithHeaders(headers))
-		case "grpc":
-			var u *url.URL
-			u, err = url.Parse(endpoint)
-			if err != nil {
-				slog.Warn("bad OTLP span endpoint %q: %w", endpoint, err)
-				return
-			}
-			opts := []otlptracegrpc.Option{
-				otlptracegrpc.WithEndpointURL(endpoint),
-			}
-			if u.Scheme == "unix" {
-				dialer := func(ctx context.Context, addr string) (net.Conn, error) {
-					return net.Dial(u.Scheme, u.Path)
-				}
-				opts = append(opts,
-					otlptracegrpc.WithDialOption(grpc.WithContextDialer(dialer)),
-					otlptracegrpc.WithInsecure())
-			}
-			configuredSpanExporter, err = otlptracegrpc.New(ctx, opts...)
-		default:
-			err = fmt.Errorf("unknown OTLP protocol: %s", proto)
-		}
+		configuredSpanExporter, err = OTLP.SpanExporter(ctx, proto, endpoint, otlpHeaders())
 		if err != nil {
 			slog.Warn("failed to configure tracing", "error", err)
 		}
@@ -141,44 +130,7 @@ func ConfiguredLogExporter(ctx context.Context) (sdklog.Exporter, bool) {
 			proto = "http/protobuf"
 		}
 
-		switch proto {
-		case "http/protobuf", "http":
-			headers := map[string]string{}
-			if hs := os.Getenv("OTEL_EXPORTER_OTLP_HEADERS"); hs != "" {
-				for _, header := range strings.Split(hs, ",") {
-					name, value, _ := strings.Cut(header, "=")
-					headers[name] = value
-				}
-			}
-			configuredLogExporter, err = otlploghttp.New(ctx,
-				otlploghttp.WithEndpointURL(endpoint),
-				otlploghttp.WithHeaders(headers))
-
-		case "grpc":
-			// FIXME: bring back when it's actually implemented
-
-			// u, err := url.Parse(endpoint)
-			// if err != nil {
-			// 	slog.Warn("bad OTLP logs endpoint %q: %w", endpoint, err)
-			// 	return
-			// }
-			//
-			opts := []otlploggrpc.Option{
-				// 	otlploggrpc.WithEndpointURL(endpoint),
-			}
-			// if u.Scheme == "unix" {
-			// 	dialer := func(ctx context.Context, addr string) (net.Conn, error) {
-			// 		return net.Dial(u.Scheme, u.Path)
-			// 	}
-			// 	opts = append(opts,
-			// 		otlploggrpc.WithDialOption(grpc.WithContextDialer(dialer)),
-			// 		otlploggrpc.WithInsecure())
-			// }
-			configuredLogExporter, err = otlploggrpc.New(ctx, opts...)
-
-		default:
-			err = fmt.Errorf("unknown OTLP protocol: %s", proto)
-		}
+		configuredLogExporter, err = OTLP.LogExporter(ctx, proto, endpoint, otlpHeaders())
 		if err != nil {
 			slog.Warn("failed to configure logging", "error", err)
 		}
@@ -217,43 +169,7 @@ func ConfiguredMetricExporter(ctx context.Context) (sdkmetric.Exporter, bool) {
 			proto = "http/protobuf"
 		}
 
-		//nolint:dupl
-		switch proto {
-		case "http/protobuf", "http":
-			headers := map[string]string{}
-			if hs := os.Getenv("OTEL_EXPORTER_OTLP_HEADERS"); hs != "" {
-				for _, header := range strings.Split(hs, ",") {
-					name, value, _ := strings.Cut(header, "=")
-					headers[name] = value
-				}
-			}
-			configuredMetricExporter, err = otlpmetrichttp.New(ctx,
-				otlpmetrichttp.WithEndpointURL(endpoint),
-				otlpmetrichttp.WithHeaders(headers))
-
-		case "grpc":
-			var u *url.URL
-			u, err = url.Parse(endpoint)
-			if err != nil {
-				slog.Warn("bad OTLP metrics endpoint %q: %w", endpoint, err)
-				return
-			}
-			opts := []otlpmetricgrpc.Option{
-				otlpmetricgrpc.WithEndpointURL(endpoint),
-			}
-			if u.Scheme == "unix" {
-				dialer := func(ctx context.Context, addr string) (net.Conn, error) {
-					return net.Dial(u.Scheme, u.Path)
-				}
-				opts = append(opts,
-					otlpmetricgrpc.WithDialOption(grpc.WithContextDialer(dialer)),
-					otlpmetricgrpc.WithInsecure())
-			}
-			configuredMetricExporter, err = otlpmetricgrpc.New(ctx, opts...)
-
-		default:
-			err = fmt.Errorf("unknown OTLP protocol: %s", proto)
-		}
+		configuredMetricExporter, err = OTLP.MetricExporter(ctx, proto, endpoint, otlpHeaders())
 		if err != nil {
 			slog.Warn("failed to configure metrics", "error", err)
 		}
