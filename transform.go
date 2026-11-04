@@ -228,17 +228,22 @@ func logRecord(l sdklog.Record) *otlplogsv1.LogRecord {
 		return true
 	})
 
-	tid, sid := l.TraceID(), l.SpanID()
 	s := &otlplogsv1.LogRecord{
-		TimeUnixNano:   uint64(l.Timestamp().UnixNano()),
-		SeverityNumber: otlplogsv1.SeverityNumber(l.Severity()),
-		SeverityText:   l.SeverityText(),
-		Body:           LogValueToPB(l.Body()),
-		Attributes:     attrs,
+		TimeUnixNano:         timeUnixNano(l.Timestamp()),
+		ObservedTimeUnixNano: timeUnixNano(l.ObservedTimestamp()),
+		EventName:            l.EventName(),
+		SeverityNumber:       otlplogsv1.SeverityNumber(l.Severity()),
+		SeverityText:         l.SeverityText(),
+		Body:                 LogValueToPB(l.Body()),
+		Attributes:           attrs,
 		// DroppedAttributesCount: 0,
-		// Flags: 0,
-		TraceId: tid[:],
-		SpanId:  sid[:],
+		Flags: uint32(l.TraceFlags()),
+	}
+	if tid := l.TraceID(); tid.IsValid() {
+		s.TraceId = tid[:]
+	}
+	if sid := l.SpanID(); sid.IsValid() {
+		s.SpanId = sid[:]
 	}
 
 	return s
