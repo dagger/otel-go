@@ -212,12 +212,16 @@ func TestOTLPHTTPRefusesGRPC(t *testing.T) {
 }
 
 // Generated module code imports this package; it must not make every module
-// compile gRPC again.
+// compile gRPC again. The test helpers send only http/protobuf too: they run
+// in containers the engine gives http/protobuf, and dagger/go builds
+// otelgotest from source for every test run.
 func TestNoGRPC(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", ".").CombinedOutput()
-	require.NoError(t, err, string(out))
-	for _, pkg := range strings.Fields(string(out)) {
-		require.False(t, strings.HasPrefix(pkg, "google.golang.org/grpc"), "links %s", pkg)
-		require.False(t, strings.HasPrefix(pkg, "go.opentelemetry.io/proto/otlp/collector/"), "links %s", pkg)
+	for _, pkg := range []string{".", "./cmd/otelgotest", "./cmd/oteljunit", "./gotestmain", "./oteltestctx"} {
+		out, err := exec.Command("go", "list", "-deps", pkg).CombinedOutput()
+		require.NoError(t, err, string(out))
+		for _, dep := range strings.Fields(string(out)) {
+			require.False(t, strings.HasPrefix(dep, "google.golang.org/grpc"), "%s links %s", pkg, dep)
+			require.False(t, strings.HasPrefix(dep, "go.opentelemetry.io/proto/otlp/collector/"), "%s links %s", pkg, dep)
+		}
 	}
 }
