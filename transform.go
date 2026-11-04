@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
-	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	otlpcommonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	otlplogsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
 	otlpmetricsv1 "go.opentelemetry.io/proto/otlp/metrics/v1"
@@ -1076,10 +1075,12 @@ func LogValueToPB(v log.Value) *otlpcommonv1.AnyValue {
 	return av
 }
 
-func ReexportLogsFromPB(ctx context.Context, exp sdklog.Exporter, req *collogspb.ExportLogsServiceRequest) error {
+// ReexportLogsFromPB exports the logs of an OTLP logs request's resources,
+// such as an ExportLogsServiceRequest's GetResourceLogs(), to exp.
+func ReexportLogsFromPB(ctx context.Context, exp sdklog.Exporter, resourceLogs []*otlplogsv1.ResourceLogs) error {
 	processor := &collectLogProcessor{}
 
-	for _, rl := range req.GetResourceLogs() {
+	for _, rl := range resourceLogs {
 		resource := ResourceFromPB(rl.GetSchemaUrl(), rl.GetResource())
 
 		provider := sdklog.NewLoggerProvider(
