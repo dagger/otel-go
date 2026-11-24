@@ -31,6 +31,13 @@ type TestEvent struct {
 	Test    string    `json:"Test"`
 	Elapsed float64   `json:"Elapsed"`
 	Output  string    `json:"Output"`
+
+	// ImportPath names the build that a "build-output" or "build-fail"
+	// event reports on, such as "example.com/pkg [example.com/pkg.test]".
+	ImportPath string `json:",omitempty"`
+	// FailedBuild is set on a package's "fail" event when the package
+	// failed because a build failed, to the ImportPath of that build.
+	FailedBuild string `json:",omitempty"`
 }
 
 // testSpan tracks an in-flight span for a single test.
@@ -54,6 +61,87 @@ type testSpan struct {
 	// context so the continuation span can link back to it when cont is emitted.
 	pausedSpanContext trace.SpanContext
 	paused            bool
+
+	// loggedBuilds holds the builds whose output is logged on this package
+	// span.
+	loggedBuilds map[*buildOutput]bool
+	// heldOutput is the package's "[build failed]" line, logged when the
+	// package fails, after the output of the build that failed.
+	heldOutput string
+}
+
+// logBuildOutput logs output of the build b on the package span.
+func (ps *testSpan) logBuildOutput(b *buildOutput, output string) {
+	if ps.loggedBuilds == nil {
+		ps.loggedBuilds = map[*buildOutput]bool{}
+	}
+	ps.loggedBuilds[b] = true
+	if ps.streams != nil {
+		_, _ = io.WriteString(ps.streams.Stdout, output)
+	}
+}
+
+// closeStreams logs a package span's held output and closes its streams.
+func (ps *testSpan) closeStreams() {
+	if ps.streams == nil {
+		return
+	}
+	if ps.heldOutput != "" {
+		_, _ = io.WriteString(ps.streams.Stdout, ps.heldOutput)
+		ps.heldOutput = ""
+	}
+	_ = ps.streams.Close()
+}
+
+// buildPackage returns the package under test that a build reported by go
+// test's build-output events belongs to, given the build's ImportPath and
+// first output, or "" if it belongs to no one package.
+//
+// A package compiled for a test binary is named with a " [pkg.test]" suffix
+// and belongs to pkg, whether it is pkg itself, its external pkg_test
+// package, or a dependency recompiled for pkg's test; the test binary's main
+// package and link step, named "pkg.test", belong to pkg too. A setup
+// failure, such as a missing import, is named by the package that could
+// not be loaded, but headed by the package under test, "# pkg".
+//
+// A package built as is, headed by its own name, may be a dependency of
+// several packages under test, even when it is one itself: the packages it
+// fails name it as their FailedBuild.
+func buildPackage(importPath, firstOutput string) string {
+	if _, variant, ok := strings.Cut(importPath, " ["); ok {
+		if pkg, ok := strings.CutSuffix(variant, ".test]"); ok {
+			return pkg
+		}
+		// Built for a command, not a test binary.
+		return ""
+	}
+	if pkg, ok := strings.CutSuffix(importPath, ".test"); ok {
+		return pkg
+	}
+	if header, ok := strings.CutPrefix(firstOutput, "# "); ok {
+		if pkg, _, _ := strings.Cut(header, "\n"); pkg != importPath {
+			return pkg
+		}
+	}
+	return ""
+}
+
+// buildOutput is the output of one build reported by go test's build-output
+// events.
+type buildOutput struct {
+	importPath string
+	// pkg is the package under test the build belongs to, if any.
+	pkg    string
+	output strings.Builder
+	// failed is set by the build's build-fail event, which ends its output.
+	failed bool
+}
+
+// isBuildFailedLine reports whether output is the line go test prints for a
+// package whose test binary could not be built or set up.
+func isBuildFailedLine(pkg, output string) bool {
+	return output == "FAIL\t"+pkg+" [build failed]\n" ||
+		output == "FAIL\t"+pkg+" [setup failed]\n"
 }
 
 // timeoutPanicPrefix starts the output a test binary prints when go test's
@@ -245,9 +333,7 @@ func spanEndTime(ts *testSpan, ev TestEvent) time.Time {
 
 // endPackageSpan ends a package span, and the log streams it may carry.
 func endPackageSpan(ps *testSpan, ev TestEvent) {
-	if ps.streams != nil {
-		_ = ps.streams.Close()
-	}
+	ps.closeStreams()
 	ps.span.End(trace.WithTimestamp(spanEndTime(ps, ev)))
 }
 
@@ -320,6 +406,28 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 
 	// dumps follows each package's output for a test binary timeout panic.
 	dumps := map[string]*timeoutDump{}
+
+	// builds holds the output of go test's build-output events by the
+	// ImportPath naming the build, for packages that fail because of it; a
+	// dependency's failed build fails every package under test that imports
+	// it, so a build that belongs to no one package is kept for the whole
+	// run. A build-fail event ends a build's output: go test reuses an
+	// ImportPath for the setup failures of other packages, such as those
+	// importing the same missing package, and each has its own. buildsByPkg
+	// holds the builds that belong to a package which has not started, in
+	// arrival order: build output arrives before the package's start event.
+	builds := map[string]*buildOutput{}
+	buildsByPkg := map[string][]*buildOutput{}
+	// forgetBuilds drops the builds that belong to a package once it ends:
+	// they are logged on its span, and only a build that belongs to no one
+	// package is named by other packages' fail events.
+	forgetBuilds := func(pkg string, ps *testSpan) {
+		for b := range ps.loggedBuilds {
+			if b.pkg == pkg && builds[b.importPath] == b {
+				delete(builds, b.importPath)
+			}
+		}
+	}
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -437,13 +545,48 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					ps.streams = &streams
 				}
 				pkgSpans[ev.Package] = ps
+				// The package's build output, such as compile errors,
+				// comes first.
+				for _, b := range buildsByPkg[ev.Package] {
+					ps.logBuildOutput(b, b.output.String())
+				}
+				delete(buildsByPkg, ev.Package)
+			case "build-output":
+				// Output of a build, such as a compile error, is logged on
+				// the span of the package it belongs to, once that starts,
+				// and on that of any package whose fail event names it.
+				if ev.ImportPath == "" || ev.Output == "" {
+					break
+				}
+				b := builds[ev.ImportPath]
+				if b == nil || b.failed {
+					b = &buildOutput{importPath: ev.ImportPath, pkg: buildPackage(ev.ImportPath, ev.Output)}
+					builds[ev.ImportPath] = b
+					if _, started := pkgSpans[b.pkg]; b.pkg != "" && !started {
+						buildsByPkg[b.pkg] = append(buildsByPkg[b.pkg], b)
+					}
+				}
+				b.output.WriteString(ev.Output)
+				if ps, ok := pkgSpans[b.pkg]; ok {
+					ps.logBuildOutput(b, ev.Output)
+				}
+			case "build-fail":
+				if b := builds[ev.ImportPath]; b != nil {
+					b.failed = true
+				}
 			case "output":
 				// Output that belongs to no test, such as what TestMain
 				// prints after m.Run or the package's FAIL line, explains
 				// the package's result; the bare PASS line does not.
 				if ps, ok := pkgSpans[ev.Package]; ok && ps.streams != nil &&
 					strings.TrimSpace(ev.Output) != "PASS" {
-					_, _ = io.WriteString(ps.streams.Stdout, ev.Output)
+					if isBuildFailedLine(ev.Package, ev.Output) {
+						// The fail event names the build that failed,
+						// whose output goes first.
+						ps.heldOutput += ev.Output
+					} else {
+						_, _ = io.WriteString(ps.streams.Stdout, ev.Output)
+					}
 				}
 			case "pass":
 				if ps, ok := pkgSpans[ev.Package]; ok {
@@ -456,6 +599,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					}
 					endPackageSpan(ps, ev)
 					delete(pkgSpans, ev.Package)
+					forgetBuilds(ev.Package, ps)
 				}
 				delete(activeTests, ev.Package)
 				delete(pkgRuns, ev.Package)
@@ -466,10 +610,16 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				}
 				finishUnfinishedTests(&cfg, spans, ev)
 				if ps, ok := pkgSpans[ev.Package]; ok {
+					// A failed build that belongs to no one package, such
+					// as a dependency's, is logged on each package it fails.
+					if b := builds[ev.FailedBuild]; b != nil && !ps.loggedBuilds[b] {
+						ps.logBuildOutput(b, b.output.String())
+					}
 					ps.span.SetStatus(codes.Error, "package had failures")
 					ps.span.SetAttributes(semconv.TestSuiteRunStatusFailure)
 					endPackageSpan(ps, ev)
 					delete(pkgSpans, ev.Package)
+					forgetBuilds(ev.Package, ps)
 				}
 				delete(activeTests, ev.Package)
 				delete(pkgRuns, ev.Package)
@@ -480,6 +630,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					ps.span.SetAttributes(semconv.TestSuiteRunStatusSkipped)
 					endPackageSpan(ps, ev)
 					delete(pkgSpans, ev.Package)
+					forgetBuilds(ev.Package, ps)
 				}
 				delete(activeTests, ev.Package)
 				delete(pkgRuns, ev.Package)
@@ -681,9 +832,7 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 		delete(dumps, pkg)
 	}
 	for _, ps := range pkgSpans {
-		if ps.streams != nil {
-			_ = ps.streams.Close()
-		}
+		ps.closeStreams()
 	}
 
 	return scanner.Err()
