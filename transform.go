@@ -220,11 +220,8 @@ func InstrumentationScopeToPB(il instrumentation.Scope) *otlpcommonv1.Instrument
 // span transforms a Span into an OTLP span.
 func logRecord(l sdklog.Record) *otlplogsv1.LogRecord {
 	attrs := []*otlpcommonv1.KeyValue{}
-	l.WalkAttributes(func(kv log.KeyValue) bool {
-		attrs = append(attrs, &otlpcommonv1.KeyValue{
-			Key:   kv.Key,
-			Value: LogValueToPB(kv.Value),
-		})
+	l.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attrs = append(attrs, keyValueToPB(kv))
 		return true
 	})
 
@@ -330,6 +327,26 @@ func value(v attribute.Value) *otlpcommonv1.AnyValue {
 			ArrayValue: &otlpcommonv1.ArrayValue{
 				Values: stringSliceValues(v.AsStringSlice()),
 			},
+		}
+	case attribute.BYTESLICE:
+		av.Value = &otlpcommonv1.AnyValue_BytesValue{
+			BytesValue: v.AsByteSlice(),
+		}
+	case attribute.SLICE:
+		array := &otlpcommonv1.ArrayValue{}
+		for _, e := range v.AsSlice() {
+			array.Values = append(array.Values, value(e))
+		}
+		av.Value = &otlpcommonv1.AnyValue_ArrayValue{
+			ArrayValue: array,
+		}
+	case attribute.MAP:
+		kvList := &otlpcommonv1.KeyValueList{}
+		for _, e := range v.AsMap() {
+			kvList.Values = append(kvList.Values, keyValueToPB(e))
+		}
+		av.Value = &otlpcommonv1.AnyValue_KvlistValue{
+			KvlistValue: kvList,
 		}
 	default:
 		av.Value = &otlpcommonv1.AnyValue_StringValue{
@@ -949,17 +966,17 @@ func InstrumentationScopeFromPB(is *otlpcommonv1.InstrumentationScope) instrumen
 	}
 }
 
-func LogKeyValuesFromPB(kvs []*otlpcommonv1.KeyValue) []log.KeyValue {
-	res := make([]log.KeyValue, len(kvs))
+func LogKeyValuesFromPB(kvs []*otlpcommonv1.KeyValue) []attribute.KeyValue {
+	res := make([]attribute.KeyValue, len(kvs))
 	for i, kv := range kvs {
 		res[i] = logKeyValue(kv)
 	}
 	return res
 }
 
-func logKeyValue(v *otlpcommonv1.KeyValue) log.KeyValue {
-	return log.KeyValue{
-		Key:   v.GetKey(),
+func logKeyValue(v *otlpcommonv1.KeyValue) attribute.KeyValue {
+	return attribute.KeyValue{
+		Key:   attribute.Key(v.GetKey()),
 		Value: LogValueFromPB(v.GetValue()),
 	}
 }
@@ -987,88 +1004,42 @@ func attrValue(v *otlpcommonv1.AnyValue) attribute.Value {
 	}
 }
 
-func LogValueFromPB(v *otlpcommonv1.AnyValue) log.Value {
+func LogValueFromPB(v *otlpcommonv1.AnyValue) attribute.Value {
 	if v == nil {
-		return log.StringValue("")
+		return attribute.StringValue("")
 	}
 	switch x := v.Value.(type) {
 	case *otlpcommonv1.AnyValue_StringValue:
-		return log.StringValue(v.GetStringValue())
+		return attribute.StringValue(v.GetStringValue())
 	case *otlpcommonv1.AnyValue_DoubleValue:
-		return log.Float64Value(v.GetDoubleValue())
+		return attribute.Float64Value(v.GetDoubleValue())
 	case *otlpcommonv1.AnyValue_IntValue:
-		return log.Int64Value(v.GetIntValue())
+		return attribute.Int64Value(v.GetIntValue())
 	case *otlpcommonv1.AnyValue_BoolValue:
-		return log.BoolValue(v.GetBoolValue())
+		return attribute.BoolValue(v.GetBoolValue())
 	case *otlpcommonv1.AnyValue_KvlistValue:
-		kvs := make([]log.KeyValue, 0, len(x.KvlistValue.GetValues()))
+		kvs := make([]attribute.KeyValue, 0, len(x.KvlistValue.GetValues()))
 		for _, kv := range x.KvlistValue.GetValues() {
 			kvs = append(kvs, logKeyValue(kv))
 		}
-		return log.MapValue(kvs...)
+		return attribute.MapValue(kvs...)
 	case *otlpcommonv1.AnyValue_ArrayValue:
-		vals := make([]log.Value, 0, len(x.ArrayValue.GetValues()))
+		vals := make([]attribute.Value, 0, len(x.ArrayValue.GetValues()))
 		for _, v := range x.ArrayValue.GetValues() {
 			vals = append(vals, LogValueFromPB(v))
 		}
-		return log.SliceValue(vals...)
+		return attribute.SliceValue(vals...)
 	case *otlpcommonv1.AnyValue_BytesValue:
-		return log.BytesValue(x.BytesValue)
+		return attribute.ByteSliceValue(x.BytesValue)
 	default:
-		slog.Error("unhandled otlpcommonv1.AnyValue -> log.Value conversion", "type", fmt.Sprintf("%T", x))
-		return log.StringValue(fmt.Sprintf("UNHANDLED LOG VALUE TYPE: %v (%T)", x, x))
+		slog.Error("unhandled otlpcommonv1.AnyValue -> attribute.Value conversion", "type", fmt.Sprintf("%T", x))
+		return attribute.StringValue(fmt.Sprintf("UNHANDLED LOG VALUE TYPE: %v (%T)", x, x))
 	}
 }
 
-// Value transforms an attribute Value into an OTLP AnyValue.
-func LogValueToPB(v log.Value) *otlpcommonv1.AnyValue {
-	av := new(otlpcommonv1.AnyValue)
-	switch v.Kind() {
-	case log.KindBool:
-		av.Value = &otlpcommonv1.AnyValue_BoolValue{
-			BoolValue: v.AsBool(),
-		}
-	case log.KindInt64:
-		av.Value = &otlpcommonv1.AnyValue_IntValue{
-			IntValue: v.AsInt64(),
-		}
-	case log.KindFloat64:
-		av.Value = &otlpcommonv1.AnyValue_DoubleValue{
-			DoubleValue: v.AsFloat64(),
-		}
-	case log.KindString:
-		av.Value = &otlpcommonv1.AnyValue_StringValue{
-			StringValue: v.AsString(),
-		}
-	case log.KindBytes:
-		av.Value = &otlpcommonv1.AnyValue_BytesValue{
-			BytesValue: v.AsBytes(),
-		}
-	case log.KindSlice:
-		array := &otlpcommonv1.ArrayValue{}
-		for _, e := range v.AsSlice() {
-			array.Values = append(array.Values, LogValueToPB(e))
-		}
-		av.Value = &otlpcommonv1.AnyValue_ArrayValue{
-			ArrayValue: array,
-		}
-	case log.KindMap:
-		kvList := &otlpcommonv1.KeyValueList{}
-		for _, e := range v.AsMap() {
-			kvList.Values = append(kvList.Values, &otlpcommonv1.KeyValue{
-				Key:   e.Key,
-				Value: LogValueToPB(e.Value),
-			})
-		}
-		av.Value = &otlpcommonv1.AnyValue_KvlistValue{
-			KvlistValue: kvList,
-		}
-	default:
-		av.Value = &otlpcommonv1.AnyValue_StringValue{
-			StringValue: "INVALID",
-		}
-	}
-	return av
+// LogValueToPB transforms a log body or attribute value into an OTLP AnyValue.
+func LogValueToPB(v attribute.Value) *otlpcommonv1.AnyValue {
+	return value(v)
 }
 
 func ReexportLogsFromPB(ctx context.Context, exp sdklog.Exporter, req *collogspb.ExportLogsServiceRequest) error {

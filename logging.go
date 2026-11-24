@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -44,21 +45,21 @@ func Logger(ctx context.Context, name string) log.Logger {
 // been received. It should not be used for general-purpose logging.
 //
 // Both streams must be closed to ensure that draining completes.
-func SpanStdio(ctx context.Context, name string, attrs ...log.KeyValue) SpanStreams {
+func SpanStdio(ctx context.Context, name string, attrs ...attribute.KeyValue) SpanStreams {
 	logger := Logger(ctx, name)
 	return SpanStreams{
 		Stdout: &spanStream{
 			Writer: &Writer{
 				ctx:    ctx,
 				logger: logger,
-				attrs:  append([]log.KeyValue{log.Int(StdioStreamAttr, 1)}, attrs...),
+				attrs:  append([]attribute.KeyValue{attribute.Int(StdioStreamAttr, 1)}, attrs...),
 			},
 		},
 		Stderr: &spanStream{
 			Writer: &Writer{
 				ctx:    ctx,
 				logger: logger,
-				attrs:  append([]log.KeyValue{log.Int(StdioStreamAttr, 2)}, attrs...),
+				attrs:  append([]attribute.KeyValue{attribute.Int(StdioStreamAttr, 2)}, attrs...),
 			},
 		},
 	}
@@ -68,12 +69,12 @@ func SpanStdio(ctx context.Context, name string, attrs ...log.KeyValue) SpanStre
 type Writer struct {
 	ctx    context.Context
 	logger log.Logger
-	attrs  []log.KeyValue
+	attrs  []attribute.KeyValue
 }
 
 // NewWriter returns a new Writer that emits log records with the given logger
 // name and attributes.
-func NewWriter(ctx context.Context, name string, attrs ...log.KeyValue) io.Writer {
+func NewWriter(ctx context.Context, name string, attrs ...attribute.KeyValue) io.Writer {
 	return &Writer{
 		ctx:    ctx,
 		logger: Logger(ctx, name),
@@ -83,12 +84,12 @@ func NewWriter(ctx context.Context, name string, attrs ...log.KeyValue) io.Write
 
 // Write emits a log record with the given payload as a string body.
 func (w *Writer) Write(p []byte) (int, error) {
-	w.Emit(log.StringValue(string(p)))
+	w.Emit(attribute.StringValue(string(p)))
 	return len(p), nil
 }
 
 // Emit sends a log record with the given body and additional attributes.
-func (w *Writer) Emit(body log.Value, attrs ...log.KeyValue) {
+func (w *Writer) Emit(body attribute.Value, attrs ...attribute.KeyValue) {
 	rec := log.Record{}
 	rec.SetTimestamp(time.Now())
 	rec.SetBody(body)
@@ -117,7 +118,7 @@ type spanStream struct {
 
 // Close emits an EOF log record.
 func (w *spanStream) Close() error {
-	w.Emit(log.StringValue(""), log.Bool(StdioEOFAttr, true))
+	w.Emit(attribute.StringValue(""), attribute.Bool(StdioEOFAttr, true))
 	return nil
 }
 
@@ -159,7 +160,7 @@ func GlobalLogsSpanContext(ctx context.Context) context.Context {
 }
 
 // GlobalWriter returns a Writer that writes to the global logging span.
-func GlobalWriter(ctx context.Context, name string, attrs ...log.KeyValue) io.Writer {
-	attrs = append(attrs, log.Bool(LogsGlobalAttr, true))
+func GlobalWriter(ctx context.Context, name string, attrs ...attribute.KeyValue) io.Writer {
+	attrs = append(attrs, attribute.Bool(LogsGlobalAttr, true))
 	return NewWriter(GlobalLogsSpanContext(ctx), name, attrs...)
 }

@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	otlpcommonv1 "go.opentelemetry.io/proto/otlp/common/v1"
@@ -19,33 +18,48 @@ import (
 func TestLogValuePBRoundTrip(t *testing.T) {
 	cases := []struct {
 		name   string
-		val    log.Value
+		val    attribute.Value
 		wantPB any
 	}{
 		{
 			name:   "bool",
-			val:    log.BoolValue(true),
+			val:    attribute.BoolValue(true),
 			wantPB: &otlpcommonv1.AnyValue_BoolValue{BoolValue: true},
 		},
 		{
 			name:   "int64",
-			val:    log.Int64Value(42),
+			val:    attribute.Int64Value(42),
 			wantPB: &otlpcommonv1.AnyValue_IntValue{IntValue: 42},
 		},
 		{
 			name:   "float64",
-			val:    log.Float64Value(1.5),
+			val:    attribute.Float64Value(1.5),
 			wantPB: &otlpcommonv1.AnyValue_DoubleValue{DoubleValue: 1.5},
 		},
 		{
 			name:   "string",
-			val:    log.StringValue("hello"),
+			val:    attribute.StringValue("hello"),
 			wantPB: &otlpcommonv1.AnyValue_StringValue{StringValue: "hello"},
 		},
 		{
 			name:   "bytes",
-			val:    log.BytesValue([]byte{0x00, 0x01, 0xff}),
+			val:    attribute.ByteSliceValue([]byte{0x00, 0x01, 0xff}),
 			wantPB: &otlpcommonv1.AnyValue_BytesValue{BytesValue: []byte{0x00, 0x01, 0xff}},
+		},
+		{
+			name: "slice",
+			val:  attribute.SliceValue(attribute.StringValue("a"), attribute.Int64Value(1)),
+			wantPB: &otlpcommonv1.AnyValue_ArrayValue{ArrayValue: &otlpcommonv1.ArrayValue{Values: []*otlpcommonv1.AnyValue{
+				{Value: &otlpcommonv1.AnyValue_StringValue{StringValue: "a"}},
+				{Value: &otlpcommonv1.AnyValue_IntValue{IntValue: 1}},
+			}}},
+		},
+		{
+			name: "map",
+			val:  attribute.MapValue(attribute.String("k", "v")),
+			wantPB: &otlpcommonv1.AnyValue_KvlistValue{KvlistValue: &otlpcommonv1.KeyValueList{Values: []*otlpcommonv1.KeyValue{
+				{Key: "k", Value: &otlpcommonv1.AnyValue{Value: &otlpcommonv1.AnyValue_StringValue{StringValue: "v"}}},
+			}}},
 		},
 	}
 
@@ -56,8 +70,8 @@ func TestLogValuePBRoundTrip(t *testing.T) {
 			assert.Equal(t, tc.wantPB, pb.Value)
 
 			got := otel.LogValueFromPB(pb)
-			assert.Equal(t, tc.val.Kind(), got.Kind())
-			assert.True(t, tc.val.Equal(got), "expected %v, got %v", tc.val, got)
+			assert.Equal(t, tc.val.Type(), got.Type())
+			assert.Equal(t, tc.val.AsInterface(), got.AsInterface())
 		})
 	}
 }
@@ -124,17 +138,17 @@ func TestReexportLogsFromPBNilResourceAndBody(t *testing.T) {
 	require.Len(t, exp.records, 1)
 	rec := exp.records[0]
 
-	assert.Equal(t, log.KindString, rec.Body().Kind())
+	assert.Equal(t, attribute.STRING, rec.Body().Type())
 	assert.Empty(t, rec.Body().AsString())
 
-	attrs := map[string]log.Value{}
-	rec.WalkAttributes(func(kv log.KeyValue) bool {
-		attrs[kv.Key] = kv.Value
+	attrs := map[string]attribute.Value{}
+	rec.WalkAttributes(func(kv attribute.KeyValue) bool {
+		attrs[string(kv.Key)] = kv.Value
 		return true
 	})
 	require.Len(t, attrs, 2)
-	assert.True(t, log.StringValue("bar").Equal(attrs["foo"]), "expected bar, got %v", attrs["foo"])
-	assert.True(t, log.Int64Value(3).Equal(attrs["count"]), "expected 3, got %v", attrs["count"])
+	assert.Equal(t, "bar", attrs["foo"].AsString())
+	assert.Equal(t, int64(3), attrs["count"].AsInt64())
 }
 
 // value is an optional field of KeyValue, so an attribute that omits it must
