@@ -133,7 +133,7 @@ func TestReportsUnderTheContract(t *testing.T) {
 				t.Errorf("grant %q outside the acquisition [%d, %d]", aa[ResourceGrantedUnixNanoAttr].AsString(), s.StartTime().UnixNano(), s.EndTime().UnixNano())
 			}
 		case "cancelled":
-			if s.Parent().SpanID() != tasks["example.com/a"].SpanContext().SpanID() || aa[ResourceGrantedUnixNanoAttr].Type() != attribute.INVALID {
+			if s.Parent().SpanID() != tasks["example.com/a"].SpanContext().SpanID() || aa[ResourceGrantedUnixNanoAttr].Type() != attribute.EMPTY {
 				t.Errorf("cancelled acquisition %v", aa)
 			}
 		default:
