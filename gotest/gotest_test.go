@@ -658,6 +658,296 @@ func TestPackageOutputIsLoggedOnPackageSpan(t *testing.T) {
 	assert.Empty(t, logsOn(logExporter.Records(), test), "package output stays off the test span")
 }
 
+// buildEvent returns a go test -json event reporting on the build id, as
+// go test emits for a build's output and failure since Go 1.24.
+func buildEvent(now time.Time, id, action, output string) gotest.TestEvent {
+	return gotest.TestEvent{Time: now, Action: action, ImportPath: id, Output: output}
+}
+
+// A package whose test binary does not build has its compile errors,
+// reported by build-output events before the package starts, logged on its
+// span ahead of its FAIL line, and nowhere else.
+func TestBuildFailureIsLoggedOnPackageSpan(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	legacy := "example.com/shop/internal/legacy"
+	cart := "example.com/shop/cart"
+	id := legacy + " [" + legacy + ".test]"
+	compileErrors := "# " + id + "\n" +
+		"internal/legacy/legacy.go:12:2: undefined: oldClient\n" +
+		"internal/legacy/legacy.go:19:9: cannot use v (variable of type int) as string value in return statement\n"
+	failLine := "FAIL\t" + legacy + " [build failed]\n"
+
+	spans, out, logs := runWithOutput(t, []gotest.TestEvent{
+		{Time: now, Action: "start", Package: cart},
+		{Time: now, Action: "run", Package: cart, Test: "TestCart"},
+		{Time: now, Action: "output", Package: cart, Test: "TestCart", Output: "=== RUN   TestCart\n"},
+		buildEvent(now, id, "build-output", "# "+id+"\n"),
+		buildEvent(now, id, "build-output", "internal/legacy/legacy.go:12:2: undefined: oldClient\n"),
+		buildEvent(now, id, "build-output", "internal/legacy/legacy.go:19:9: cannot use v (variable of type int) as string value in return statement\n"),
+		buildEvent(now, id, "build-fail", ""),
+		{Time: now, Action: "output", Package: cart, Test: "TestCart", Output: "cart_test.go:8: checking out\n"},
+		{Time: now, Action: "output", Package: cart, Test: "TestCart", Output: "--- PASS: TestCart (0.00s)\n"},
+		{Time: now, Action: "pass", Package: cart, Test: "TestCart"},
+		{Time: now, Action: "start", Package: legacy},
+		{Time: now, Action: "output", Package: legacy, Output: failLine},
+		{Time: now, Action: "fail", Package: legacy, FailedBuild: id},
+		{Time: now, Action: "output", Package: cart, Output: "PASS\n"},
+		{Time: now, Action: "output", Package: cart, Output: "ok  \t" + cart + "\t0.010s\n"},
+		{Time: now, Action: "pass", Package: cart},
+	})
+
+	legacySpan := findSpan(spans, legacy)
+	require.NotNil(t, legacySpan)
+	assert.Equal(t, codes.Error, legacySpan.Status().Code)
+	assert.Equal(t, compileErrors+failLine, logsOn(logs.Records(), legacySpan))
+
+	cartSpan := findSpan(spans, cart)
+	require.NotNil(t, cartSpan)
+	assert.Equal(t, "ok  \t"+cart+"\t0.010s\n", logsOn(logs.Records(), cartSpan))
+	test := findSpanByTestCaseName(spans, "TestCart")
+	require.NotNil(t, test)
+	assert.Equal(t, "cart_test.go:8: checking out\n", logsOn(logs.Records(), test),
+		"build output stays off test spans")
+
+	// The human-readable output is what go test prints.
+	assert.Equal(t, compileErrors+failLine+"ok  \t"+cart+"\t0.010s\n", out)
+}
+
+// The builds of a package's test binary are named with a " [pkg.test]"
+// suffix: the package itself, its external _test package, and dependencies
+// recompiled for the test; its link step is named "pkg.test". Their output,
+// such as what -gcflags=-m prints, is logged on the package span whether
+// the build fails or not, and whether it arrives before the package starts
+// or after.
+func TestBuildOutputOfTestBinaryIsLoggedOnPackageSpan(t *testing.T) {
+	t.Parallel()
+
+	pkg := "example.com/shop/internal/legacy"
+	for name, id := range map[string]string{
+		"package":               pkg + " [" + pkg + ".test]",
+		"external test":         pkg + "_test [" + pkg + ".test]",
+		"recompiled dependency": "example.com/shop/internal/db [" + pkg + ".test]",
+		"test binary link":      pkg + ".test",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Now()
+			spans, _, logs := runWithOutput(t, []gotest.TestEvent{
+				buildEvent(now, id, "build-output", "# "+id+"\n"),
+				buildEvent(now, id, "build-output", "./legacy.go:3:6: can inline F\n"),
+				{Time: now, Action: "start", Package: pkg},
+				buildEvent(now, id, "build-output", "./legacy.go:7:6: can inline G\n"),
+				{Time: now, Action: "run", Package: pkg, Test: "TestF"},
+				{Time: now, Action: "pass", Package: pkg, Test: "TestF"},
+				{Time: now, Action: "output", Package: pkg, Output: "ok  \t" + pkg + "\t0.010s\n"},
+				{Time: now, Action: "pass", Package: pkg},
+			})
+
+			pkgSpan := findSpan(spans, pkg)
+			require.NotNil(t, pkgSpan)
+			assert.Equal(t,
+				"# "+id+"\n./legacy.go:3:6: can inline F\n./legacy.go:7:6: can inline G\nok  \t"+pkg+"\t0.010s\n",
+				logsOn(logs.Records(), pkgSpan))
+			test := findSpanByTestCaseName(spans, "TestF")
+			require.NotNil(t, test)
+			assert.Empty(t, logsOn(logs.Records(), test))
+		})
+	}
+}
+
+// A package whose only tests are external is compiled as is, under its own
+// ImportPath, as a dependency of its tests would be; when it fails, its
+// output is logged from the fail event that names it, ahead of the FAIL
+// line, whenever it arrived.
+func TestBuildFailureOfPackageBuiltAsIsIsLoggedOnPackageSpan(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	pkg := "example.com/shop/internal/legacy"
+	failLine := "FAIL\t" + pkg + " [build failed]\n"
+	spans, _, logs := runWithOutput(t, []gotest.TestEvent{
+		buildEvent(now, pkg, "build-output", "# "+pkg+"\n"),
+		buildEvent(now, pkg, "build-output", "internal/legacy/legacy.go:3:26: undefined: oldClient\n"),
+		{Time: now, Action: "start", Package: pkg},
+		buildEvent(now, pkg, "build-output", "internal/legacy/legacy.go:4:26: undefined: newClient\n"),
+		buildEvent(now, pkg, "build-fail", ""),
+		{Time: now, Action: "output", Package: pkg, Output: failLine},
+		{Time: now, Action: "fail", Package: pkg, FailedBuild: pkg},
+	})
+
+	pkgSpan := findSpan(spans, pkg)
+	require.NotNil(t, pkgSpan)
+	assert.Equal(t,
+		"# "+pkg+"\ninternal/legacy/legacy.go:3:26: undefined: oldClient\ninternal/legacy/legacy.go:4:26: undefined: newClient\n"+failLine,
+		logsOn(logs.Records(), pkgSpan))
+}
+
+// A package with internal tests that fails to build, and that another
+// package under test imports, is built twice: as is, for the importer, and
+// with its tests. Each package logs the build that failed it.
+func TestPackageAndItsTestVariantBuildsAreLoggedApart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	dep := "example.com/shop/dep"
+	depTest := dep + " [" + dep + ".test]"
+	api := "example.com/shop/api"
+	depErrors := "# " + dep + "\ndep/dep.go:3:26: undefined: legacyConfig\n"
+	depTestErrors := "# " + depTest + "\ndep/dep.go:3:26: undefined: legacyConfig\n"
+
+	var events []gotest.TestEvent
+	for _, b := range []struct{ id, output string }{{dep, depErrors}, {depTest, depTestErrors}} {
+		for line := range strings.Lines(b.output) {
+			events = append(events, buildEvent(now, b.id, "build-output", line))
+		}
+		events = append(events, buildEvent(now, b.id, "build-fail", ""))
+	}
+	for _, p := range []struct{ pkg, failedBuild string }{{api, dep}, {dep, depTest}} {
+		events = append(events,
+			gotest.TestEvent{Time: now, Action: "start", Package: p.pkg},
+			gotest.TestEvent{Time: now, Action: "output", Package: p.pkg, Output: "FAIL\t" + p.pkg + " [build failed]\n"},
+			gotest.TestEvent{Time: now, Action: "fail", Package: p.pkg, FailedBuild: p.failedBuild},
+		)
+	}
+	spans, _, logs := runWithOutput(t, events)
+
+	apiSpan := findSpan(spans, api)
+	require.NotNil(t, apiSpan)
+	assert.Equal(t, depErrors+"FAIL\t"+api+" [build failed]\n", logsOn(logs.Records(), apiSpan))
+	depSpan := findSpan(spans, dep)
+	require.NotNil(t, depSpan)
+	assert.Equal(t, depTestErrors+"FAIL\t"+dep+" [build failed]\n", logsOn(logs.Records(), depSpan))
+}
+
+// A dependency that fails to build is named by its own ImportPath and fails
+// every package under test that imports it; each of them, which name it as
+// their FailedBuild, logs its output once, and no other package does.
+func TestDependencyBuildFailureIsLoggedOnFailedPackages(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	dep := "example.com/shop/internal/dep"
+	api := "example.com/shop/api"
+	web := "example.com/shop/web"
+	cart := "example.com/shop/cart"
+	compileErrors := "# " + dep + "\ninternal/dep/dep.go:7:2: undefined: legacyConfig\n"
+	failed := func(pkg string) []gotest.TestEvent {
+		return []gotest.TestEvent{
+			{Time: now, Action: "start", Package: pkg},
+			{Time: now, Action: "output", Package: pkg, Output: "FAIL\t" + pkg + " [build failed]\n"},
+			{Time: now, Action: "fail", Package: pkg, FailedBuild: dep},
+		}
+	}
+
+	events := []gotest.TestEvent{
+		buildEvent(now, dep, "build-output", "# "+dep+"\n"),
+		buildEvent(now, dep, "build-output", "internal/dep/dep.go:7:2: undefined: legacyConfig\n"),
+		buildEvent(now, dep, "build-fail", ""),
+	}
+	events = append(events, failed(api)...)
+	events = append(events, failed(web)...)
+	// The dependency is under test too, without test files.
+	events = append(events, failed(dep)...)
+	events = append(events,
+		gotest.TestEvent{Time: now, Action: "start", Package: cart},
+		gotest.TestEvent{Time: now, Action: "run", Package: cart, Test: "TestCart"},
+		gotest.TestEvent{Time: now, Action: "pass", Package: cart, Test: "TestCart"},
+		gotest.TestEvent{Time: now, Action: "output", Package: cart, Output: "ok  \t" + cart + "\t0.010s\n"},
+		gotest.TestEvent{Time: now, Action: "pass", Package: cart},
+	)
+	spans, out, logs := runWithOutput(t, events)
+
+	for _, pkg := range []string{api, web, dep} {
+		pkgSpan := findSpan(spans, pkg)
+		require.NotNil(t, pkgSpan, pkg)
+		assert.Equal(t, codes.Error, pkgSpan.Status().Code, pkg)
+		assert.Equal(t, compileErrors+"FAIL\t"+pkg+" [build failed]\n", logsOn(logs.Records(), pkgSpan), pkg)
+	}
+	cartSpan := findSpan(spans, cart)
+	require.NotNil(t, cartSpan)
+	assert.Equal(t, "ok  \t"+cart+"\t0.010s\n", logsOn(logs.Records(), cartSpan))
+	test := findSpanByTestCaseName(spans, "TestCart")
+	require.NotNil(t, test)
+	assert.Empty(t, logsOn(logs.Records(), test))
+
+	// go test prints the dependency's errors once.
+	assert.Equal(t, 1, strings.Count(out, compileErrors), out)
+}
+
+// go test names a package's setup failure, such as a missing import, by the
+// ImportPath of the missing package, and reuses it for every package that
+// imports it; each package span logs only its own errors.
+func TestSetupFailuresSharingImportPathAreLoggedApart(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	missing := "example.com/shop/missing"
+	setupErrors := func(pkg string) string {
+		return "# " + pkg + "\n" +
+			strings.TrimPrefix(pkg, "example.com/shop/") + "/x_test.go:5:2: no required module provides package " + missing + "; to add it:\n" +
+			"\tgo get " + missing + "\n"
+	}
+	var events []gotest.TestEvent
+	for _, pkg := range []string{"example.com/shop/c1", "example.com/shop/c2"} {
+		for line := range strings.Lines(setupErrors(pkg)) {
+			events = append(events, buildEvent(now, missing, "build-output", line))
+		}
+		events = append(events,
+			buildEvent(now, missing, "build-fail", ""),
+			gotest.TestEvent{Time: now, Action: "start", Package: pkg},
+			gotest.TestEvent{Time: now, Action: "output", Package: pkg, Output: "FAIL\t" + pkg + " [setup failed]\n"},
+			gotest.TestEvent{Time: now, Action: "fail", Package: pkg, FailedBuild: missing},
+		)
+	}
+	spans, _, logs := runWithOutput(t, events)
+
+	for _, pkg := range []string{"example.com/shop/c1", "example.com/shop/c2"} {
+		pkgSpan := findSpan(spans, pkg)
+		require.NotNil(t, pkgSpan, pkg)
+		assert.Equal(t,
+			setupErrors(pkg)+"FAIL\t"+pkg+" [setup failed]\n",
+			logsOn(logs.Records(), pkgSpan), pkg)
+	}
+}
+
+// A package that fails setup for several reasons, such as two missing
+// imports, gets each reported under its own ImportPath, though its fail
+// event names only the first; its span logs them all.
+func TestSetupFailureWithSeveralErrorsIsLoggedWhole(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	pkg := "example.com/shop/c1"
+	var events []gotest.TestEvent
+	var setupErrors string
+	for _, imp := range []struct{ missing, pos string }{
+		{"example.com/shop/missing1", "c1/c1.go:4:2"},
+		{"example.com/shop/missing2", "c1/c1.go:5:2"},
+	} {
+		errs := "# " + pkg + "\n" +
+			imp.pos + ": no required module provides package " + imp.missing + "; to add it:\n" +
+			"\tgo get " + imp.missing + "\n"
+		setupErrors += errs
+		for line := range strings.Lines(errs) {
+			events = append(events, buildEvent(now, imp.missing, "build-output", line))
+		}
+		events = append(events, buildEvent(now, imp.missing, "build-fail", ""))
+	}
+	events = append(events,
+		gotest.TestEvent{Time: now, Action: "start", Package: pkg},
+		gotest.TestEvent{Time: now, Action: "output", Package: pkg, Output: "FAIL\t" + pkg + " [setup failed]\n"},
+		gotest.TestEvent{Time: now, Action: "fail", Package: pkg, FailedBuild: "example.com/shop/missing1"},
+	)
+	spans, _, logs := runWithOutput(t, events)
+
+	pkgSpan := findSpan(spans, pkg)
+	require.NotNil(t, pkgSpan)
+	assert.Equal(t, setupErrors+"FAIL\t"+pkg+" [setup failed]\n", logsOn(logs.Records(), pkgSpan))
+}
+
 func TestPassingPackageWithTests(t *testing.T) {
 	t.Parallel()
 
