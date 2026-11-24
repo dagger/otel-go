@@ -30,7 +30,9 @@ type Testgen {
       ],
     )
     let after = go
-      .base
+      # The sample module's toolchain: Go containers run GOTOOLCHAIN=local.
+      .module(ws, "gotest/testdata/sample")
+      .base(ws)
       .withWorkdir("/ws")
       .withMountedCache("/go/pkg/mod", cacheVolume("go-mod"))
       .withEnvVariable("GOMODCACHE", "/go/pkg/mod")

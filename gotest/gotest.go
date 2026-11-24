@@ -353,10 +353,19 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 				}
 			}
 			if dumpText != "" {
-				if ps, ok := pkgSpans[ev.Package]; ok && ps.streams != nil {
-					_, _ = io.WriteString(ps.streams.Stdout, carried+dumpText)
-				}
 				before := ev.Output[:len(ev.Output)-len(dumpText)]
+				if ps, ok := pkgSpans[ev.Package]; ok && ps.streams != nil {
+					// The package's own output was logged as it arrived,
+					// a carried part of the signature line included.
+					logText := carried + dumpText
+					if carriedTest == "" {
+						logText = dumpText
+					}
+					if ev.Test == "" && strings.TrimSpace(before) != "PASS" {
+						logText = before + logText
+					}
+					_, _ = io.WriteString(ps.streams.Stdout, logText)
+				}
 				if cfg.output != nil {
 					if cfg.verbose {
 						// Verbose output is printed as it arrives, uncapped.
@@ -428,6 +437,14 @@ func Run(ctx context.Context, r io.Reader, tp trace.TracerProvider, opts ...Opti
 					ps.streams = &streams
 				}
 				pkgSpans[ev.Package] = ps
+			case "output":
+				// Output that belongs to no test, such as what TestMain
+				// prints after m.Run or the package's FAIL line, explains
+				// the package's result; the bare PASS line does not.
+				if ps, ok := pkgSpans[ev.Package]; ok && ps.streams != nil &&
+					strings.TrimSpace(ev.Output) != "PASS" {
+					_, _ = io.WriteString(ps.streams.Stdout, ev.Output)
+				}
 			case "pass":
 				if ps, ok := pkgSpans[ev.Package]; ok {
 					if pkgRuns[ev.Package] == 0 {
