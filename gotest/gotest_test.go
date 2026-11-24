@@ -619,6 +619,45 @@ func TestPackageWithNoTestsToRunIsSkipped(t *testing.T) {
 	assert.NotContains(t, pkgSpan.Attributes(), semconv.TestCaseResultStatusPass)
 }
 
+// Output that belongs to no test, such as a TestMain teardown failure after
+// m.Run, is logged on the package span even without WithOutput, as when
+// the caller consumes the JSON stream.
+func TestPackageOutputIsLoggedOnPackageSpan(t *testing.T) {
+	t.Parallel()
+
+	logExporter := &recordingLogExporter{}
+	lp := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logExporter)))
+	t.Cleanup(func() {
+		require.NoError(t, lp.Shutdown(context.Background()))
+	})
+
+	now := time.Now()
+	pkg := "example.com/pkg"
+	spans := runEvents(t, []gotest.TestEvent{
+		{Time: now, Action: "start", Package: pkg},
+		{Time: now, Action: "run", Package: pkg, Test: "TestOK"},
+		{Time: now, Action: "output", Package: pkg, Test: "TestOK", Output: "=== RUN   TestOK\n"},
+		{Time: now, Action: "output", Package: pkg, Test: "TestOK", Output: "--- PASS: TestOK (0.00s)\n"},
+		{Time: now, Action: "pass", Package: pkg, Test: "TestOK"},
+		{Time: now, Action: "output", Package: pkg, Output: "PASS\n"},
+		{Time: now, Action: "output", Package: pkg, Output: "teardown failure: database still running\n"},
+		{Time: now, Action: "output", Package: pkg, Output: "FAIL\texample.com/pkg\t0.010s\n"},
+		{Time: now, Action: "fail", Package: pkg},
+	}, gotest.WithLoggerProvider(lp))
+	require.NoError(t, lp.ForceFlush(context.Background()))
+
+	pkgSpan := findSpan(spans, pkg)
+	require.NotNil(t, pkgSpan)
+	assert.Equal(t, codes.Error, pkgSpan.Status().Code)
+	assert.Equal(t,
+		"teardown failure: database still running\nFAIL\texample.com/pkg\t0.010s\n",
+		logsOn(logExporter.Records(), pkgSpan))
+
+	test := findSpanByTestCaseName(spans, "TestOK")
+	require.NotNil(t, test)
+	assert.Empty(t, logsOn(logExporter.Records(), test), "package output stays off the test span")
+}
+
 func TestPassingPackageWithTests(t *testing.T) {
 	t.Parallel()
 
