@@ -16,8 +16,27 @@ source = "github.com/dagger/dang-sdk"
 [modules.testgen]
 source = ".dagger/modules/testgen"
 
-[modules.dagger-dang-sdk.as-sdk]
-name = "dang"
+[sdks.dang]
+module = "dagger-dang-sdk"
 
-[[modules.dagger-dang-sdk.as-sdk.modules]]
-path = ".dagger/modules/testgen"
+[sdks.dang.scopes.".dagger/modules/testgen"]
+is-module = true
+clients = ["github.com/dagger/go@v0.5.0"]
+
+[modules.golangci-lint]
+source = "dagger.io/go/golangci-lint"
+
+[modules.contributor]
+source = "github.com/vito/agents/contributor"
+
+[modules.editor]
+source = "github.com/vito/editor"
+
+[modules.staff]
+source = "github.com/vito/agents/staff"
+
+[modules.reviewer]
+source = "github.com/vito/agents/reviewer"
+
+[modules.committer]
+source = "github.com/vito/agents/committer"

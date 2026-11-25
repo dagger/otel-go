@@ -2,9 +2,8 @@ name = "testgen"
 engineVersion = "v1.0.0-beta.26"
 
 [runtime]
-  source = "dang"
+source = "dang"
 
 [[dependencies]]
-  name = "go"
-  source = "github.com/dagger/go@main"
-  pin = "03e734711c381da8f263cdbb670aedd2ede38822"
+name = "go"
+source = "github.com/dagger/go@v0.5.0"

@@ -14,6 +14,7 @@ package gotestmain
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -100,7 +101,9 @@ func Main(m *testing.M) int {
 	_ = pipeW.Close()
 
 	// Wait for the pipeline to finish.
-	<-done
+	if err := <-done; err != nil {
+		fmt.Fprintf(os.Stderr, "gotestmain: reading test output: %v\n", err)
+	}
 	_ = test2json.Wait()
 
 	// Restore stdout for any final output.
