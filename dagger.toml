@@ -25,3 +25,18 @@ clients = ["github.com/dagger/go@03e734711c381da8f263cdbb670aedd2ede38822"]
 
 [modules.golangci-lint]
 source = "dagger.io/go/golangci-lint"
+
+[modules.contributor]
+source = "github.com/vito/agents/contributor"
+
+[modules.editor]
+source = "github.com/vito/editor"
+
+[modules.staff]
+source = "github.com/vito/agents/staff"
+
+[modules.reviewer]
+source = "github.com/vito/agents/reviewer"
+
+[modules.committer]
+source = "github.com/vito/agents/committer"
