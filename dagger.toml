@@ -16,8 +16,12 @@ source = "github.com/dagger/dang-sdk"
 [modules.testgen]
 source = ".dagger/modules/testgen"
 
-[modules.dagger-dang-sdk.as-sdk]
-name = "dang"
+[sdks.dang]
+module = "dagger-dang-sdk"
 
-[[modules.dagger-dang-sdk.as-sdk.modules]]
-path = ".dagger/modules/testgen"
+[sdks.dang.scopes.".dagger/modules/testgen"]
+is-module = true
+clients = ["github.com/dagger/go@03e734711c381da8f263cdbb670aedd2ede38822"]
+
+[modules.golangci-lint]
+source = "dagger.io/go/golangci-lint"
